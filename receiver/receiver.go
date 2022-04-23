@@ -32,6 +32,13 @@ func NewReceiver() *Receiver {
 	return r
 }
 
+func (r *Receiver) Close() error {
+	if err := r.peerConnection.Close(); err != nil {
+		fmt.Println(err)
+	}
+	return r.statsServer.Shutdown(context.Background())
+}
+
 func (r *Receiver) SetVnet(v *vnet.Net, publicIPs []string) {
 	r.settingEngine.SetVNet(v)
 	r.settingEngine.SetICETimeouts(time.Second, time.Second, 200*time.Millisecond)
@@ -158,6 +165,7 @@ func (r *Receiver) onTrack(trackRemote *webrtc.TrackRemote, rtpReceiver *webrtc.
 		}
 		if err != nil {
 			fmt.Printf("trackRemote.ReadRTP returned error: %v\n", err)
+			continue
 		}
 		bytesReceivedChan <- p.MarshalSize()
 	}

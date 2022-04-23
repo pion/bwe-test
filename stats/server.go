@@ -1,6 +1,7 @@
 package stats
 
 import (
+	"context"
 	"html/template"
 	"log"
 	"net/http"
@@ -15,6 +16,7 @@ type DataPoint struct {
 }
 
 type Server struct {
+	srv      *http.Server
 	upgrader *websocket.Upgrader
 	dataChan chan DataPoint
 }
@@ -51,11 +53,19 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 	homeTemplate.Execute(w, "ws://"+r.Host+"/update")
 }
 
-// TODO: Graceful shutdown
 func (s *Server) Start() {
-	http.HandleFunc("/", s.home)
-	http.HandleFunc("/update", s.update)
-	http.ListenAndServe(":8080", nil)
+	mux := &http.ServeMux{}
+	mux.HandleFunc("/", s.home)
+	mux.HandleFunc("/update", s.update)
+	s.srv = &http.Server{
+		Addr:    ":8080",
+		Handler: mux,
+	}
+	s.srv.ListenAndServe()
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	return s.srv.Shutdown(ctx)
 }
 
 var homeTemplate = template.Must(template.New("").Parse(`

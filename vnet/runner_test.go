@@ -33,12 +33,14 @@ type Sender interface {
 	CreateOffer() (*webrtc.SessionDescription, error)
 	AcceptAnswer(*webrtc.SessionDescription) error
 	Start() error
+	Close() error
 }
 
 type Receiver interface {
 	SetVnet(*vnet.Net, []string)
 	SetupPeerConnection() error
 	AcceptOffer(*webrtc.SessionDescription) (*webrtc.SessionDescription, error)
+	Close() error
 }
 
 func VnetRunner(t *testing.T, sender Sender, receiver Receiver) {
@@ -104,4 +106,10 @@ func VnetRunner(t *testing.T, sender Sender, receiver Receiver) {
 		)
 		time.Sleep(phase.d)
 	}
+
+	err = receiver.Close()
+	assert.NoError(t, err)
+
+	err = sender.Close()
+	assert.NoError(t, err)
 }

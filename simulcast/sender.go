@@ -42,6 +42,7 @@ type Sender struct {
 	videoTrack     *webrtc.TrackLocalStaticSample
 	estimator      cc.BandwidthEstimator
 	rtpWriter      io.Writer
+	done           chan struct{}
 }
 
 func NewSender() (*Sender, error) {
@@ -57,6 +58,7 @@ func NewSender() (*Sender, error) {
 		currentQualityLevel: 0,
 		settingEngine:       &webrtc.SettingEngine{},
 		rtpWriter:           io.Discard,
+		done:                make(chan struct{}),
 	}
 
 	for _, level := range sender.qualityLevels {
@@ -238,48 +240,56 @@ func (s *Sender) Start() error {
 	}
 
 	lastLog := time.Now()
-	for now := range ticker.C {
-		targetBitrate := s.estimator.GetTargetBitrate()
-		if now.Sub(lastLog) >= time.Second {
-			fmt.Printf("targetBitrate = %v\n", targetBitrate)
-			lastLog = now
-		}
-		switch {
-		// If current quality level is below target bitrate drop to level below
-		case s.currentQualityLevel != 0 && targetBitrate < s.qualityLevels[s.currentQualityLevel].bitrate:
-			fmt.Printf("targetBitrate = %v\n", targetBitrate)
-			switchQualityLevel(s.currentQualityLevel - 1)
+	for {
+		select {
+		case now := <-ticker.C:
+			targetBitrate := s.estimator.GetTargetBitrate()
+			if now.Sub(lastLog) >= time.Second {
+				fmt.Printf("targetBitrate = %v\n", targetBitrate)
+				lastLog = now
+			}
+			switch {
+			// If current quality level is below target bitrate drop to level below
+			case s.currentQualityLevel != 0 && targetBitrate < s.qualityLevels[s.currentQualityLevel].bitrate:
+				fmt.Printf("targetBitrate = %v\n", targetBitrate)
+				switchQualityLevel(s.currentQualityLevel - 1)
 
-			// If next quality level is above target bitrate move to next level
-		case len(s.qualityLevels) > (s.currentQualityLevel+1) && targetBitrate > s.qualityLevels[s.currentQualityLevel+1].bitrate:
-			fmt.Printf("targetBitrate = %v\n", targetBitrate)
-			switchQualityLevel(s.currentQualityLevel + 1)
+				// If next quality level is above target bitrate move to next level
+			case len(s.qualityLevels) > (s.currentQualityLevel+1) && targetBitrate > s.qualityLevels[s.currentQualityLevel+1].bitrate:
+				fmt.Printf("targetBitrate = %v\n", targetBitrate)
+				switchQualityLevel(s.currentQualityLevel + 1)
 
-		// Adjust outbound bandwidth for probing
-		default:
-			frame, _, err = ivf.ParseNextFrame()
-		}
+			// Adjust outbound bandwidth for probing
+			default:
+				frame, _, err = ivf.ParseNextFrame()
+			}
 
-		switch err {
-		// No error write the video frame
-		case nil:
-			currentTimestamp = frameHeader.Timestamp
-			if err = s.videoTrack.WriteSample(media.Sample{Data: frame, Duration: time.Second}); err != nil {
+			switch err {
+			// No error write the video frame
+			case nil:
+				currentTimestamp = frameHeader.Timestamp
+				if err = s.videoTrack.WriteSample(media.Sample{Data: frame, Duration: time.Second}); err != nil {
+					return err
+				}
+			// If we have reached the end of the file start again
+			case io.EOF:
+				ivf.ResetReader(setReaderFile(s.qualityLevels[s.currentQualityLevel].fileName))
+			// Error besides io.EOF that we dont know how to handle
+			default:
 				return err
 			}
-		// If we have reached the end of the file start again
-		case io.EOF:
-			ivf.ResetReader(setReaderFile(s.qualityLevels[s.currentQualityLevel].fileName))
-		// Error besides io.EOF that we dont know how to handle
-		default:
-			return err
+		case <-s.done:
+			return nil
 		}
 	}
-	return nil
 }
 
 func (s *Sender) Close() error {
-	return s.peerConnection.Close()
+	if err := s.peerConnection.Close(); err != nil {
+		fmt.Println(err)
+	}
+	close(s.done)
+	return nil
 }
 
 func setReaderFile(filename string) func(_ int64) io.Reader {

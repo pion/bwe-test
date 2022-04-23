@@ -24,11 +24,13 @@ type Sender struct {
 	videoTrack     *webrtc.TrackLocalStaticSample
 	estimator      cc.BandwidthEstimator
 	codec          syncodec.Codec
+	done           chan struct{}
 }
 
 func NewSender() (*Sender, error) {
 	sender := &Sender{
 		settingEngine: &webrtc.SettingEngine{},
+		done:          make(chan struct{}),
 	}
 
 	return sender, nil
@@ -172,24 +174,33 @@ func (s *Sender) Start() error {
 	defer ticker.Stop()
 	lastLog := time.Now()
 	lastBitrate := initialBitrate
-	for now := range ticker.C {
-		targetBitrate := s.estimator.GetTargetBitrate()
-		if now.Sub(lastLog) >= time.Second {
-			fmt.Printf("targetBitrate = %v\n", targetBitrate)
-			lastLog = now
-		}
-		if lastBitrate != targetBitrate {
-			s.codec.SetTargetBitrate(targetBitrate)
-			lastBitrate = targetBitrate
+
+	for {
+		select {
+		case now := <-ticker.C:
+			targetBitrate := s.estimator.GetTargetBitrate()
+			if now.Sub(lastLog) >= time.Second {
+				fmt.Printf("targetBitrate = %v\n", targetBitrate)
+				lastLog = now
+			}
+			if lastBitrate != targetBitrate {
+				s.codec.SetTargetBitrate(targetBitrate)
+				lastBitrate = targetBitrate
+			}
+		case <-s.done:
+			return nil
 		}
 	}
-	return nil
 }
 
 // TODO: How to handle multiple errors properly?
 func (s *Sender) Close() error {
 	if err := s.codec.Close(); err != nil {
-		return err
+		fmt.Println(err)
 	}
-	return s.peerConnection.Close()
+	if err := s.peerConnection.Close(); err != nil {
+		fmt.Println(err)
+	}
+	close(s.done)
+	return nil
 }
