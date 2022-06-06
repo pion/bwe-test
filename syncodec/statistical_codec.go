@@ -241,7 +241,7 @@ func (c *StatisticalCodec) nextFrame() Frame {
 	}
 }
 
-// Run starts the StatisticalCodec
+// Start starts the StatisticalCodec
 func (c *StatisticalCodec) Start() {
 	timer := time.NewTimer(c.t0)
 	for {

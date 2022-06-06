@@ -71,8 +71,14 @@ func NewManager() (*NetworkManager, error) {
 	if err != nil {
 		return nil, err
 	}
-	wan.AddNet(leftTBF)
-	wan.AddChildRouter(leftRouter)
+	err = wan.AddNet(leftTBF)
+	if err != nil {
+		return nil, err
+	}
+	err = wan.AddChildRouter(leftRouter)
+	if err != nil {
+		return nil, err
+	}
 
 	rightRouterConfig := &vnet.RouterConfig{
 		CIDR: "10.0.2.0/24",
@@ -92,8 +98,14 @@ func NewManager() (*NetworkManager, error) {
 	if err != nil {
 		return nil, err
 	}
-	wan.AddNet(rightTBF)
-	wan.AddChildRouter(rightRouter)
+	err = wan.AddNet(rightTBF)
+	if err != nil {
+		return nil, err
+	}
+	err = wan.AddChildRouter(rightRouter)
+	if err != nil {
+		return nil, err
+	}
 
 	manager := &NetworkManager{
 		leftRouter: &RouterWithConfig{
@@ -124,7 +136,10 @@ func (m *NetworkManager) GetLeftNet() (*vnet.Net, string, error) {
 		StaticIPs: []string{privateIP},
 		StaticIP:  "",
 	})
-	m.leftRouter.AddNet(net)
+	err = m.leftRouter.AddNet(net)
+	if err != nil {
+		return nil, "", err
+	}
 	return net, publicIP, nil
 }
 
@@ -137,7 +152,10 @@ func (m *NetworkManager) GetRightNet() (*vnet.Net, string, error) {
 		StaticIPs: []string{privateIP},
 		StaticIP:  "",
 	})
-	m.rightRouter.AddNet(net)
+	err = m.rightRouter.AddNet(net)
+	if err != nil {
+		return nil, "", err
+	}
 	return net, publicIP, nil
 }
 

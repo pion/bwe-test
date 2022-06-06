@@ -6,10 +6,10 @@ import (
 	"io"
 	"time"
 
-	"github.com/pion/bwe-test/stats"
+	"github.com/pion/bwe-test/logging"
+
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/packetdump"
-	"github.com/pion/rtp"
 	"github.com/pion/transport/vnet"
 	"github.com/pion/webrtc/v3"
 )
@@ -18,31 +18,23 @@ type Receiver struct {
 	settingEngine  *webrtc.SettingEngine
 	peerConnection *webrtc.PeerConnection
 	rtpWriter      io.Writer
-
-	statsServer *stats.Server
 }
 
-func NewReceiver() *Receiver {
+func NewReceiver(opts ...Option) (*Receiver, error) {
 	r := &Receiver{
 		settingEngine: &webrtc.SettingEngine{},
 		rtpWriter:     io.Discard,
-		statsServer:   stats.New(),
 	}
-	go r.statsServer.Start()
-	return r
+	for _, opt := range opts {
+		if err := opt(r); err != nil {
+			return nil, err
+		}
+	}
+	return r, nil
 }
 
 func (r *Receiver) Close() error {
-	if err := r.peerConnection.Close(); err != nil {
-		fmt.Println(err)
-	}
-	return r.statsServer.Shutdown(context.Background())
-}
-
-func (r *Receiver) SetVnet(v *vnet.Net, publicIPs []string) {
-	r.settingEngine.SetVNet(v)
-	r.settingEngine.SetICETimeouts(time.Second, time.Second, 200*time.Millisecond)
-	r.settingEngine.SetNAT1To1IPs(publicIPs, webrtc.ICECandidateTypeHost)
+	return r.peerConnection.Close()
 }
 
 func (r *Receiver) SetupPeerConnection() error {
@@ -57,7 +49,7 @@ func (r *Receiver) SetupPeerConnection() error {
 	}
 
 	rtpLogger, err := packetdump.NewReceiverInterceptor(
-		packetdump.RTPFormatter(rtpFormat),
+		packetdump.RTPFormatter(logging.RTPFormat),
 		packetdump.RTPWriter(r.rtpWriter),
 	)
 	if err != nil {
@@ -125,7 +117,6 @@ func (r *Receiver) onTrack(trackRemote *webrtc.TrackRemote, rtpReceiver *webrtc.
 		bytesReceived := 0
 		ticker := time.NewTicker(time.Second)
 		last := time.Now()
-		start := last
 		for {
 			select {
 			case <-ctx.Done():
@@ -138,13 +129,6 @@ func (r *Receiver) onTrack(trackRemote *webrtc.TrackRemote, rtpReceiver *webrtc.
 				fmt.Printf("throughput: %.2f Mb/s\n", mBitPerSecond)
 				bytesReceived = 0
 				last = now
-
-				r.statsServer.Add(stats.DataPoint{
-					Label:     "receiver_throughput",
-					Timestamp: now.Sub(start).Milliseconds(),
-					Value:     rate,
-				})
-
 			case newBytesReceived := <-bytesReceivedChan:
 				bytesReceived += newBytesReceived
 			}
@@ -169,16 +153,4 @@ func (r *Receiver) onTrack(trackRemote *webrtc.TrackRemote, rtpReceiver *webrtc.
 		}
 		bytesReceivedChan <- p.MarshalSize()
 	}
-}
-
-func rtpFormat(pkt *rtp.Packet, attributes interceptor.Attributes) string {
-	return fmt.Sprintf("%v, %v, %v, %v, %v, %v, %v\n",
-		time.Now().UnixMilli(),
-		pkt.PayloadType,
-		pkt.SSRC,
-		pkt.SequenceNumber,
-		pkt.Timestamp,
-		pkt.Marker,
-		pkt.MarshalSize(),
-	)
 }

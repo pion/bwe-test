@@ -2,76 +2,82 @@ package vnet
 
 import (
 	"fmt"
+	"github.com/pion/bwe-test/sender"
+	"io"
 	"testing"
 	"time"
 
-	"github.com/pion/bwe-test/abr"
 	"github.com/pion/bwe-test/receiver"
-	"github.com/pion/bwe-test/simulcast"
 	"github.com/pion/transport/vnet"
-	"github.com/pion/webrtc/v3"
 	"github.com/stretchr/testify/assert"
 )
 
+type senderMode int
+
+const (
+	simulcastSenderMode senderMode = iota
+	abrSenderMode
+)
+
 func TestVnetRunnerSimulcast(t *testing.T) {
-	sender, err := simulcast.NewSender()
-	assert.NoError(t, err)
-	receiver := receiver.NewReceiver()
-	VnetRunner(t, sender, receiver)
+	VnetRunner(t, simulcastSenderMode)
 }
 
 func TestVnetRunnerABR(t *testing.T) {
-	sender, err := abr.NewSender()
-	assert.NoError(t, err)
-	receiver := receiver.NewReceiver()
-	VnetRunner(t, sender, receiver)
+	VnetRunner(t, abrSenderMode)
 }
 
-type Sender interface {
-	SetVnet(*vnet.Net, []string)
-	SetupPeerConnection() error
-	CreateOffer() (*webrtc.SessionDescription, error)
-	AcceptAnswer(*webrtc.SessionDescription) error
-	Start() error
-	Close() error
-}
-
-type Receiver interface {
-	SetVnet(*vnet.Net, []string)
-	SetupPeerConnection() error
-	AcceptOffer(*webrtc.SessionDescription) (*webrtc.SessionDescription, error)
-	Close() error
-}
-
-func VnetRunner(t *testing.T, sender Sender, receiver Receiver) {
+func VnetRunner(t *testing.T, mode senderMode) {
 	nm, err := NewManager()
 	assert.NoError(t, err)
 
 	leftVnet, publicIPLeft, err := nm.GetLeftNet()
 	assert.NoError(t, err)
-	sender.SetVnet(leftVnet, []string{publicIPLeft})
-
 	rightVnet, publicIPRight, err := nm.GetRightNet()
 	assert.NoError(t, err)
-	receiver.SetVnet(rightVnet, []string{publicIPRight})
 
-	err = sender.SetupPeerConnection()
+	var s *sender.Sender
+	switch mode {
+	case abrSenderMode:
+		s, err = sender.NewSender(
+			sender.NewStatisticalEncoderSource(),
+			sender.SetVnet(leftVnet, []string{publicIPLeft}),
+			sender.RTPLogWriter(io.Discard),
+		)
+		assert.NoError(t, err)
+	case simulcastSenderMode:
+		s, err = sender.NewSender(
+			sender.NewSimulcastFilesSource(),
+			sender.SetVnet(leftVnet, []string{publicIPLeft}),
+			sender.RTPLogWriter(io.Discard),
+		)
+		assert.NoError(t, err)
+	default:
+		assert.Fail(t, "invalid sender mode", mode)
+	}
+
+	r, err := receiver.NewReceiver(
+		receiver.Vnet(rightVnet, []string{publicIPRight}),
+	)
 	assert.NoError(t, err)
 
-	offer, err := sender.CreateOffer()
+	err = s.SetupPeerConnection()
 	assert.NoError(t, err)
 
-	err = receiver.SetupPeerConnection()
+	offer, err := s.CreateOffer()
 	assert.NoError(t, err)
 
-	answer, err := receiver.AcceptOffer(offer)
+	err = r.SetupPeerConnection()
 	assert.NoError(t, err)
 
-	err = sender.AcceptAnswer(answer)
+	answer, err := r.AcceptOffer(offer)
+	assert.NoError(t, err)
+
+	err = s.AcceptAnswer(answer)
 	assert.NoError(t, err)
 
 	go func() {
-		err = sender.Start()
+		err = s.Start()
 		assert.NoError(t, err)
 	}()
 
@@ -107,9 +113,9 @@ func VnetRunner(t *testing.T, sender Sender, receiver Receiver) {
 		time.Sleep(phase.d)
 	}
 
-	err = receiver.Close()
+	err = r.Close()
 	assert.NoError(t, err)
 
-	err = sender.Close()
+	err = s.Close()
 	assert.NoError(t, err)
 }
