@@ -1,10 +1,11 @@
 package sender
 
 import (
-	"github.com/pion/transport/vnet"
-	"github.com/pion/webrtc/v3"
 	"io"
 	"time"
+
+	"github.com/pion/transport/vnet"
+	"github.com/pion/webrtc/v3"
 )
 
 type Option func(*Sender) error

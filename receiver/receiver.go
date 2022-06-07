@@ -2,8 +2,10 @@ package receiver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"time"
 
 	"github.com/pion/bwe-test/logging"
@@ -153,4 +155,25 @@ func (r *Receiver) onTrack(trackRemote *webrtc.TrackRemote, rtpReceiver *webrtc.
 		}
 		bytesReceivedChan <- p.MarshalSize()
 	}
+}
+
+func (r *Receiver) SDPHandler() http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		sdp := webrtc.SessionDescription{}
+		if err := json.NewDecoder(req.Body).Decode(&sdp); err != nil {
+			panic(err)
+		}
+		answer, err := r.AcceptOffer(&sdp)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		// Send our answer to the HTTP server listening in the other process
+		payload, err := json.Marshal(answer)
+		if err != nil {
+			panic(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(payload)
+	})
 }

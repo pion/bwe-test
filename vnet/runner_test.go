@@ -2,10 +2,11 @@ package vnet
 
 import (
 	"fmt"
-	"github.com/pion/bwe-test/sender"
 	"io"
 	"testing"
 	"time"
+
+	"github.com/pion/bwe-test/sender"
 
 	"github.com/pion/bwe-test/receiver"
 	"github.com/pion/transport/vnet"
@@ -81,8 +82,8 @@ func VnetRunner(t *testing.T, mode senderMode) {
 		assert.NoError(t, err)
 	}()
 
-	referenceCapacity := 1 * vnet.MBit
-	referenceMaxBurst := 80 * vnet.KBit
+	referenceCapacity := 2 * vnet.MBit
+	referenceMaxBurst := 160 * vnet.KBit
 	phases := []struct {
 		d             time.Duration
 		capacityRatio float64

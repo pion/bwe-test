@@ -1,8 +1,12 @@
 package sender
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
 	"time"
 
 	"github.com/pion/bwe-test/logging"
@@ -197,6 +201,7 @@ func (s *Sender) Start() error {
 					s.source.SetTargetBitrate(targetBitrate)
 					lastBitrate = targetBitrate
 				}
+				//fmt.Println(s.estimator.GetStats())
 			case <-s.done:
 				return
 			}
@@ -211,4 +216,30 @@ func (s *Sender) Start() error {
 func (s *Sender) Close() error {
 	close(s.done)
 	return s.peerConnection.Close()
+}
+
+func (s *Sender) SignalHTTP(addr, route string) error {
+	offer, err := s.CreateOffer()
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(offer)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("http://%s/%s", addr, route)
+	log.Printf("connecting to '%v'\n", url)
+	resp, err := http.Post(url, "application/json; charset=utf-8", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("signaling received unexpected status code: %v: %v", resp.StatusCode, resp.Status)
+	}
+	answer := webrtc.SessionDescription{}
+	if sdpErr := json.NewDecoder(resp.Body).Decode(&answer); sdpErr != nil {
+		panic(sdpErr)
+	}
+
+	return s.AcceptAnswer(&answer)
 }
