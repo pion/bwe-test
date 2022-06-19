@@ -8,7 +8,7 @@ require (
 	github.com/pion/transport v0.13.1-0.20220423204831-750e80daf80c
 	github.com/pion/webrtc/v3 v3.1.41
 	github.com/stretchr/testify v1.7.2
-	golang.org/x/sync v0.0.0-20201020160332-67f06af15bc9
+	golang.org/x/sync v0.0.0-20220601150217-0de741cfad7f
 )
 
 require (
