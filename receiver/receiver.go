@@ -3,29 +3,37 @@ package receiver
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
 
-	"github.com/pion/bwe-test/logging"
-
 	"github.com/pion/interceptor"
-	"github.com/pion/interceptor/pkg/packetdump"
+	"github.com/pion/logging"
 	"github.com/pion/transport/vnet"
 	"github.com/pion/webrtc/v3"
 )
 
 type Receiver struct {
-	settingEngine  *webrtc.SettingEngine
+	settingEngine *webrtc.SettingEngine
+	mediaEngine   *webrtc.MediaEngine
+
 	peerConnection *webrtc.PeerConnection
-	rtpWriter      io.Writer
+
+	registry *interceptor.Registry
+
+	log logging.LeveledLogger
 }
 
 func NewReceiver(opts ...Option) (*Receiver, error) {
 	r := &Receiver{
-		settingEngine: &webrtc.SettingEngine{},
-		rtpWriter:     io.Discard,
+		settingEngine:  &webrtc.SettingEngine{},
+		mediaEngine:    &webrtc.MediaEngine{},
+		peerConnection: &webrtc.PeerConnection{},
+		registry:       &interceptor.Registry{},
+		log:            logging.NewDefaultLoggerFactory().NewLogger("receiver"),
+	}
+	if err := r.mediaEngine.RegisterDefaultCodecs(); err != nil {
+		return nil, err
 	}
 	for _, opt := range opts {
 		if err := opt(r); err != nil {
@@ -40,29 +48,10 @@ func (r *Receiver) Close() error {
 }
 
 func (r *Receiver) SetupPeerConnection() error {
-	i := &interceptor.Registry{}
-	m := &webrtc.MediaEngine{}
-	if err := m.RegisterDefaultCodecs(); err != nil {
-		return err
-	}
-
-	if err := webrtc.RegisterDefaultInterceptors(m, i); err != nil {
-		return err
-	}
-
-	rtpLogger, err := packetdump.NewReceiverInterceptor(
-		packetdump.RTPFormatter(logging.RTPFormat),
-		packetdump.RTPWriter(r.rtpWriter),
-	)
-	if err != nil {
-		return err
-	}
-	i.Add(rtpLogger)
-
 	peerConnection, err := webrtc.NewAPI(
 		webrtc.WithSettingEngine(*r.settingEngine),
-		webrtc.WithInterceptorRegistry(i),
-		webrtc.WithMediaEngine(m),
+		webrtc.WithInterceptorRegistry(r.registry),
+		webrtc.WithMediaEngine(r.mediaEngine),
 	).NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		return err
@@ -71,17 +60,17 @@ func (r *Receiver) SetupPeerConnection() error {
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		fmt.Printf("Receiver Connection State has changed %s \n", connectionState.String())
+		r.log.Infof("Receiver Connection State has changed %s \n", connectionState.String())
 	})
 
 	// Set the handler for Peer connection state
 	// This will notify you when the peer has connected/disconnected
 	peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-		fmt.Printf("Receiver Peer Connection State has changed: %s\n", s.String())
+		r.log.Infof("Receiver Peer Connection State has changed: %s\n", s.String())
 	})
 
 	peerConnection.OnICECandidate(func(i *webrtc.ICECandidate) {
-		fmt.Printf("Receiver candidate: %v\n", i)
+		r.log.Infof("Receiver candidate: %v\n", i)
 	})
 
 	peerConnection.OnTrack(r.onTrack)
@@ -128,7 +117,7 @@ func (r *Receiver) onTrack(trackRemote *webrtc.TrackRemote, rtpReceiver *webrtc.
 				bits := float64(bytesReceived) * 8.0
 				rate := bits / delta.Seconds()
 				mBitPerSecond := rate / float64(vnet.MBit)
-				fmt.Printf("throughput: %.2f Mb/s\n", mBitPerSecond)
+				r.log.Infof("throughput: %.2f Mb/s\n", mBitPerSecond)
 				bytesReceived = 0
 				last = now
 			case newBytesReceived := <-bytesReceivedChan:
@@ -138,19 +127,19 @@ func (r *Receiver) onTrack(trackRemote *webrtc.TrackRemote, rtpReceiver *webrtc.
 	}(ctx)
 	for {
 		if err := rtpReceiver.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-			fmt.Printf("failed to SetReadDeadline for rtpReceiver: %v", err)
+			r.log.Infof("failed to SetReadDeadline for rtpReceiver: %v", err)
 		}
 		if err := trackRemote.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-			fmt.Printf("failed to SetReadDeadline for trackRemote: %v", err)
+			r.log.Infof("failed to SetReadDeadline for trackRemote: %v", err)
 		}
 
 		p, _, err := trackRemote.ReadRTP()
 		if err == io.EOF {
-			fmt.Println("trackRemote.ReadRTP received EOF")
+			r.log.Infof("trackRemote.ReadRTP received EOF")
 			return
 		}
 		if err != nil {
-			fmt.Printf("trackRemote.ReadRTP returned error: %v\n", err)
+			r.log.Infof("trackRemote.ReadRTP returned error: %v\n", err)
 			continue
 		}
 		bytesReceivedChan <- p.MarshalSize()
@@ -174,6 +163,8 @@ func (r *Receiver) SDPHandler() http.HandlerFunc {
 			panic(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(payload)
+		if _, err := w.Write(payload); err != nil {
+			r.log.Errorf("failed to write signaling response: %v", err)
+		}
 	})
 }

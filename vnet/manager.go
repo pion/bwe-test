@@ -39,7 +39,7 @@ type NetworkManager struct {
 }
 
 const (
-	initCapacity = 3 * vnet.MBit
+	initCapacity = 1 * vnet.MBit
 	initMaxBurst = 80 * vnet.KBit
 )
 
@@ -67,7 +67,11 @@ func NewManager() (*NetworkManager, error) {
 		return nil, err
 	}
 
-	leftTBF, err := vnet.NewTokenBucketFilter(leftRouter, vnet.TBFRate(initCapacity), vnet.TBFMaxBurst(initMaxBurst))
+	leftTBF, err := vnet.NewTokenBucketFilter(
+		leftRouter,
+		vnet.TBFRate(initCapacity),
+		vnet.TBFMaxBurst(initMaxBurst),
+	)
 	if err != nil {
 		return nil, err
 	}

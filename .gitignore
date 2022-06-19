@@ -1,4 +1,5 @@
 *.y4m
 *.ivf
 .idea/
+data/
 bwe-test

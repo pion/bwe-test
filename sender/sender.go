@@ -2,49 +2,60 @@ package sender
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"time"
 
-	"github.com/pion/bwe-test/logging"
-	"github.com/pion/interceptor/pkg/packetdump"
-
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
-	"github.com/pion/interceptor/pkg/gcc"
+	"github.com/pion/logging"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
+	"golang.org/x/sync/errgroup"
 )
 
 type MediaSource interface {
 	SetTargetBitrate(int)
 	SetWriter(func(sample media.Sample) error)
-	Start() error
-	io.Closer
+	Start(ctx context.Context) error
 }
 
 type Sender struct {
 	settingEngine *webrtc.SettingEngine
+	mediaEngine   *webrtc.MediaEngine
 
 	peerConnection *webrtc.PeerConnection
 	videoTrack     *webrtc.TrackLocalStaticSample
 
-	source    MediaSource
-	estimator cc.BandwidthEstimator
+	source        MediaSource
+	estimator     cc.BandwidthEstimator
+	estimatorChan chan cc.BandwidthEstimator
 
-	rtpWriter io.Writer
-	done      chan struct{}
+	registry *interceptor.Registry
+
+	ccLogWriter io.Writer
+
+	log logging.LeveledLogger
 }
 
 func NewSender(source MediaSource, opts ...Option) (*Sender, error) {
 	sender := &Sender{
-		settingEngine: &webrtc.SettingEngine{},
-		source:        source,
-		rtpWriter:     io.Discard,
-		done:          make(chan struct{}),
+		settingEngine:  &webrtc.SettingEngine{},
+		mediaEngine:    &webrtc.MediaEngine{},
+		peerConnection: nil,
+		videoTrack:     nil,
+		source:         source,
+		estimator:      nil,
+		estimatorChan:  make(chan cc.BandwidthEstimator),
+		registry:       &interceptor.Registry{},
+		ccLogWriter:    io.Discard,
+		log:            logging.NewDefaultLoggerFactory().NewLogger("sender"),
+	}
+	if err := sender.mediaEngine.RegisterDefaultCodecs(); err != nil {
+		return nil, err
 	}
 	for _, opt := range opts {
 		if err := opt(sender); err != nil {
@@ -56,60 +67,16 @@ func NewSender(source MediaSource, opts ...Option) (*Sender, error) {
 }
 
 func (s *Sender) SetupPeerConnection() error {
-	i := &interceptor.Registry{}
-	m := &webrtc.MediaEngine{}
-	if err := m.RegisterDefaultCodecs(); err != nil {
-		return err
-	}
-
-	// Create a Congestion Controller. This analyzes inbound and outbound data and provides
-	// suggestions on how much we should be sending.
-	//
-	// Passing `nil` means we use the default Estimation Algorithm which is Google Congestion Control.
-	// You can use the other ones that Pion provides, or write your own!
-	congestionController, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
-		return gcc.NewSendSideBWE(gcc.SendSideBWEInitialBitrate(initialBitrate))
-	})
-	if err != nil {
-		return err
-	}
-
-	estimatorChan := make(chan cc.BandwidthEstimator, 1)
-	congestionController.OnNewPeerConnection(func(_ string, estimator cc.BandwidthEstimator) {
-		estimatorChan <- estimator
-	})
-
-	i.Add(congestionController)
-	if err = webrtc.ConfigureTWCCHeaderExtensionSender(m, i); err != nil {
-		return err
-	}
-
-	if err = webrtc.RegisterDefaultInterceptors(m, i); err != nil {
-		return err
-	}
-
-	rtpLogger, err := packetdump.NewSenderInterceptor(
-		packetdump.RTPFormatter(logging.RTPFormat),
-		packetdump.RTPWriter(s.rtpWriter),
-	)
-	if err != nil {
-		return err
-	}
-	i.Add(rtpLogger)
-
 	// Create a new RTCPeerConnection
 	peerConnection, err := webrtc.NewAPI(
 		webrtc.WithSettingEngine(*s.settingEngine),
-		webrtc.WithInterceptorRegistry(i),
-		webrtc.WithMediaEngine(m),
+		webrtc.WithInterceptorRegistry(s.registry),
+		webrtc.WithMediaEngine(s.mediaEngine),
 	).NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		return err
 	}
 	s.peerConnection = peerConnection
-
-	// Wait until our Bandwidth Estimator has been created
-	s.estimator = <-estimatorChan
 
 	// Create a video track
 	videoTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "pion")
@@ -138,15 +105,15 @@ func (s *Sender) SetupPeerConnection() error {
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
 	s.peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		fmt.Printf("Sender Connection State has changed %s \n", connectionState.String())
+		s.log.Infof("Sender Connection State has changed %s \n", connectionState.String())
 	})
 	// Set the handler for Peer connection state
 	// This will notify you when the peer has connected/disconnected
-	s.peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-		fmt.Printf("Sender Peer Connection State has changed: %s\n", s.String())
+	s.peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		s.log.Infof("Sender Peer Connection State has changed: %s\n", state.String())
 	})
 	peerConnection.OnICECandidate(func(i *webrtc.ICECandidate) {
-		fmt.Printf("Sender candidate: %v\n", i)
+		s.log.Infof("Sender candidate: %v\n", i)
 	})
 	return nil
 }
@@ -169,8 +136,7 @@ func (s *Sender) CreateOffer() (*webrtc.SessionDescription, error) {
 	// we do this because we only can exchange one signaling message
 	// in a production application you should exchange ICE Candidates via OnICECandidate
 	<-gatherComplete
-	fmt.Printf("Sender gatherComplete: %v\n", s.peerConnection.ICEGatheringState())
-	//fmt.Printf("Sender Offer SDP: \n%v", offer.SDP)
+	s.log.Infof("Sender gatherComplete: %v\n", s.peerConnection.ICEGatheringState())
 
 	return s.peerConnection.LocalDescription(), nil
 }
@@ -180,7 +146,7 @@ func (s *Sender) AcceptAnswer(answer *webrtc.SessionDescription) error {
 	return s.peerConnection.SetRemoteDescription(*answer)
 }
 
-func (s *Sender) Start() error {
+func (s *Sender) Start(ctx context.Context) error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	lastLog := time.Now()
@@ -188,34 +154,40 @@ func (s *Sender) Start() error {
 
 	s.source.SetWriter(s.videoTrack.WriteSample)
 
-	go func() {
+	wg, ctx := errgroup.WithContext(ctx)
+
+	wg.Go(func() error {
+		var estimator cc.BandwidthEstimator
+		select {
+		case estimator = <-s.estimatorChan:
+		case <-ctx.Done():
+			return nil
+		}
 		for {
 			select {
 			case now := <-ticker.C:
-				targetBitrate := s.estimator.GetTargetBitrate()
+				targetBitrate := estimator.GetTargetBitrate()
 				if now.Sub(lastLog) >= time.Second {
-					fmt.Printf("targetBitrate = %v\n", targetBitrate)
+					s.log.Infof("targetBitrate = %v\n", targetBitrate)
 					lastLog = now
 				}
 				if lastBitrate != targetBitrate {
 					s.source.SetTargetBitrate(targetBitrate)
 					lastBitrate = targetBitrate
 				}
-				//fmt.Println(s.estimator.GetStats())
-			case <-s.done:
-				return
+				fmt.Fprintf(s.ccLogWriter, "%v, %v\n", now.UnixMilli(), targetBitrate)
+			case <-ctx.Done():
+				return nil
 			}
 		}
-	}()
+	})
 
-	return s.source.Start()
-}
+	wg.Go(func() error {
+		return s.source.Start(ctx)
+	})
 
-// Close closes the sender
-// TODO: How to handle multiple errors properly?
-func (s *Sender) Close() error {
-	close(s.done)
-	return s.peerConnection.Close()
+	defer s.peerConnection.Close()
+	return wg.Wait()
 }
 
 func (s *Sender) SignalHTTP(addr, route string) error {
@@ -228,7 +200,7 @@ func (s *Sender) SignalHTTP(addr, route string) error {
 		return err
 	}
 	url := fmt.Sprintf("http://%s/%s", addr, route)
-	log.Printf("connecting to '%v'\n", url)
+	s.log.Infof("connecting to '%v'\n", url)
 	resp, err := http.Post(url, "application/json; charset=utf-8", bytes.NewReader(payload))
 	if err != nil {
 		return err

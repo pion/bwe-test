@@ -1,13 +1,13 @@
 package sender
 
 import (
-	"fmt"
+	"context"
 	"io"
-	"log"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/pion/logging"
 	"github.com/pion/webrtc/v3/pkg/media"
 	"github.com/pion/webrtc/v3/pkg/media/ivfreader"
 )
@@ -37,6 +37,7 @@ type SimulcastFilesSource struct {
 	WriteSample         func(media.Sample) error
 	done                chan struct{}
 	wg                  sync.WaitGroup
+	log                 logging.LeveledLogger
 }
 
 func (s *SimulcastFilesSource) Close() error {
@@ -63,6 +64,7 @@ func NewSimulcastFilesSource() *SimulcastFilesSource {
 		},
 		done: make(chan struct{}),
 		wg:   sync.WaitGroup{},
+		log:  logging.NewDefaultLoggerFactory().NewLogger("simulcast_source"),
 	}
 }
 
@@ -74,10 +76,7 @@ func (s *SimulcastFilesSource) SetWriter(f func(sample media.Sample) error) {
 	s.WriteSample = f
 }
 
-func (s *SimulcastFilesSource) Start() error {
-	s.wg.Add(1)
-	defer s.wg.Done()
-
+func (s *SimulcastFilesSource) Start(ctx context.Context) error {
 	files := make(map[string]*os.File)
 	file, err := os.Open(s.qualityLevels[s.currentQualityLevel].fileName)
 	if err != nil {
@@ -86,9 +85,9 @@ func (s *SimulcastFilesSource) Start() error {
 	files[s.qualityLevels[s.currentQualityLevel].fileName] = file
 	defer func() {
 		for _, file := range files {
-			err := file.Close()
-			if err != nil {
-				log.Printf("failed to close file %v: %v", file.Name(), err)
+			err1 := file.Close()
+			if err1 != nil {
+				s.log.Infof("failed to close file %v: %v", file.Name(), err1)
 			}
 		}
 	}()
@@ -126,12 +125,12 @@ func (s *SimulcastFilesSource) Start() error {
 	}
 
 	switchQualityLevel := func(newQualityLevel int) error {
-		fmt.Printf("Switching from %s to %s \n", s.qualityLevels[s.currentQualityLevel].fileName, s.qualityLevels[newQualityLevel].fileName)
+		s.log.Infof("Switching from %s to %s \n", s.qualityLevels[s.currentQualityLevel].fileName, s.qualityLevels[newQualityLevel].fileName)
 		s.currentQualityLevel = newQualityLevel
 
-		readerFile, err := setReaderFile(s.qualityLevels[s.currentQualityLevel].fileName)
-		if err != nil {
-			return err
+		readerFile, err1 := setReaderFile(s.qualityLevels[s.currentQualityLevel].fileName)
+		if err1 != nil {
+			return err1
 		}
 		ivf.ResetReader(readerFile)
 		for {
@@ -179,16 +178,16 @@ func (s *SimulcastFilesSource) Start() error {
 				}
 			// If we have reached the end of the file start again
 			case io.EOF:
-				readerFile, err := setReaderFile(s.qualityLevels[s.currentQualityLevel].fileName)
-				if err != nil {
-					return err
+				readerFile, err1 := setReaderFile(s.qualityLevels[s.currentQualityLevel].fileName)
+				if err1 != nil {
+					return err1
 				}
 				ivf.ResetReader(readerFile)
 			// Error besides io.EOF that we dont know how to handle
 			default:
 				return err
 			}
-		case <-s.done:
+		case <-ctx.Done():
 			return nil
 		}
 	}
