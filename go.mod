@@ -5,7 +5,7 @@ go 1.18
 require (
 	github.com/pion/interceptor v0.1.12-0.20220524135124-0748586beeec
 	github.com/pion/logging v0.2.2
-	github.com/pion/transport v0.13.1-0.20220423204831-750e80daf80c
+	github.com/pion/transport v0.13.1
 	github.com/pion/webrtc/v3 v3.1.41
 	github.com/stretchr/testify v1.8.0
 	golang.org/x/sync v0.0.0-20220601150217-0de741cfad7f
@@ -31,6 +31,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	golang.org/x/crypto v0.0.0-20220516162934-403b01795ae8 // indirect
 	golang.org/x/net v0.0.0-20220531201128-c960675eff93 // indirect
-	golang.org/x/sys v0.0.0-20220520151302-bc2c85ada10a // indirect
+	golang.org/x/sys v0.0.0-20220608164250-635b8c9b7f68 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
