@@ -1,0 +1,8 @@
+[
+  {
+    "name": "pion-abr",
+    "description": "",
+    "sender": "../cmd/bwe-test",
+    "receiver": "../cmd/bwe-test"
+  }
+]
