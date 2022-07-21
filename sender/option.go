@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/pion/bwe-test/logging"
+	"github.com/pion/interceptor/nada/pkg/nada"
 	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/interceptor/pkg/packetdump"
@@ -14,19 +15,21 @@ import (
 
 type Option func(*Sender) error
 
-func PacketLogWriter(rtpWriter, rtcpWriter io.Writer) Option {
+func PacketLogWriter(outboundRTPWriter, outboundRTCPWriter, inboundRTCPWriter io.Writer) Option {
 	return func(s *Sender) error {
-		formatter := logging.RTPFormatter{}
+		outboundFormatter := logging.RTPFormatter{}
 		rtpLogger, err := packetdump.NewSenderInterceptor(
-			packetdump.RTPFormatter(formatter.RTPFormat),
-			packetdump.RTPWriter(rtpWriter),
+			packetdump.RTPFormatter(outboundFormatter.RTPFormat),
+			packetdump.RTCPFormatter(logging.RTCPFormat),
+			packetdump.RTPWriter(outboundRTPWriter),
+			packetdump.RTCPWriter(outboundRTCPWriter),
 		)
 		if err != nil {
 			return err
 		}
 		rtcpLogger, err := packetdump.NewReceiverInterceptor(
 			packetdump.RTCPFormatter(logging.RTCPFormat),
-			packetdump.RTCPWriter(rtcpWriter),
+			packetdump.RTCPWriter(inboundRTCPWriter),
 		)
 		if err != nil {
 			return err
@@ -43,6 +46,12 @@ func DefaultInterceptors() Option {
 	}
 }
 
+func RTCPReports() Option {
+	return func(s *Sender) error {
+		return webrtc.ConfigureRTCPReports(s.registry)
+	}
+}
+
 func CCLogWriter(w io.Writer) Option {
 	return func(s *Sender) error {
 		s.ccLogWriter = w
@@ -50,10 +59,10 @@ func CCLogWriter(w io.Writer) Option {
 	}
 }
 
-func GCC(initialBitrate int) Option {
+func NADA() Option {
 	return func(s *Sender) error {
 		controller, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
-			return gcc.NewSendSideBWE(gcc.SendSideBWEInitialBitrate(initialBitrate))
+			return nada.NewBandwidthEstimator(), nil
 		})
 		if err != nil {
 			return err
@@ -64,8 +73,33 @@ func GCC(initialBitrate int) Option {
 			}()
 		})
 		s.registry.Add(controller)
-		if err = webrtc.ConfigureTWCCHeaderExtensionSender(s.mediaEngine, s.registry); err != nil {
+		return nil
+	}
+}
+
+func GCC(initialBitrate, minBitrate, maxBitrate int, twcc bool) Option {
+	return func(s *Sender) error {
+		controller, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
+			return gcc.NewSendSideBWE(
+				gcc.SendSideBWEInitialBitrate(initialBitrate),
+				gcc.SendSideBWEMinBitrate(minBitrate),
+				gcc.SendSideBWEMaxBitrate(maxBitrate),
+			)
+		})
+		if err != nil {
 			return err
+		}
+		controller.OnNewPeerConnection(func(_ string, estimator cc.BandwidthEstimator) {
+			go func() {
+				s.estimatorChan <- estimator
+			}()
+		})
+		s.registry.Add(controller)
+
+		if twcc {
+			if err = webrtc.ConfigureTWCCHeaderExtensionSender(s.mediaEngine, s.registry); err != nil {
+				return err
+			}
 		}
 		return nil
 	}

@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
+	"github.com/pion/interceptor/pkg/stats"
 	"github.com/pion/logging"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
@@ -34,6 +36,10 @@ type Sender struct {
 	estimator     cc.BandwidthEstimator
 	estimatorChan chan cc.BandwidthEstimator
 
+	lock  sync.Mutex
+	stats stats.Getter
+	ssrcs []uint32
+
 	registry *interceptor.Registry
 
 	ccLogWriter io.Writer
@@ -41,7 +47,25 @@ type Sender struct {
 	log logging.LeveledLogger
 }
 
-func NewSender(source MediaSource, opts ...Option) (*Sender, error) {
+func (s *Sender) GetStats() map[uint32]*stats.Stats {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+
+	result := make(map[uint32]*stats.Stats, len(s.ssrcs))
+	for _, ssrc := range s.ssrcs {
+		result[ssrc] = s.stats.Get(ssrc)
+	}
+	return result
+}
+
+func (s *Sender) GetTargetBitrate() int {
+	if s.estimator == nil {
+		return 0
+	}
+	return s.estimator.GetTargetBitrate()
+}
+
+func New(source MediaSource, opts ...Option) (*Sender, error) {
 	sender := &Sender{
 		settingEngine:  &webrtc.SettingEngine{},
 		mediaEngine:    &webrtc.MediaEngine{},
@@ -50,6 +74,7 @@ func NewSender(source MediaSource, opts ...Option) (*Sender, error) {
 		source:         source,
 		estimator:      nil,
 		estimatorChan:  make(chan cc.BandwidthEstimator),
+		stats:          nil,
 		registry:       &interceptor.Registry{},
 		ccLogWriter:    io.Discard,
 		log:            logging.NewDefaultLoggerFactory().NewLogger("sender"),
@@ -57,6 +82,15 @@ func NewSender(source MediaSource, opts ...Option) (*Sender, error) {
 	if err := sender.mediaEngine.RegisterDefaultCodecs(); err != nil {
 		return nil, err
 	}
+	statsInterceptor, err := stats.NewInterceptor()
+	if err != nil {
+		return nil, err
+	}
+	sender.registry.Add(statsInterceptor)
+	statsInterceptor.OnNewPeerConnection(func(_ string, sg stats.Getter) {
+		sender.stats = sg
+	})
+
 	for _, opt := range opts {
 		if err := opt(sender); err != nil {
 			return nil, err
@@ -89,6 +123,11 @@ func (s *Sender) SetupPeerConnection() error {
 	if err != nil {
 		return err
 	}
+	s.lock.Lock()
+	for _, encoding := range rtpSender.GetParameters().Encodings {
+		s.ssrcs = append(s.ssrcs, uint32(encoding.SSRC))
+	}
+	s.lock.Unlock()
 
 	// Read incoming RTCP packets
 	// Before these packets are returned they are processed by interceptors. For things
@@ -96,8 +135,9 @@ func (s *Sender) SetupPeerConnection() error {
 	go func() {
 		rtcpBuf := make([]byte, 1500)
 		for {
-			if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
-				return
+			_, _, err := rtpSender.Read(rtcpBuf)
+			if err != nil {
+				s.log.Warnf("failed to read RTCP from rtpSender: %v", err)
 			}
 		}
 	}()
@@ -152,14 +192,50 @@ func (s *Sender) Start(ctx context.Context) error {
 	lastLog := time.Now()
 	lastBitrate := initialBitrate
 
-	s.source.SetWriter(s.videoTrack.WriteSample)
+	c := make(chan int)
+	go func() {
+		t := time.NewTicker(time.Second)
+		bytesSinceLastLog := float64(0)
+		ll := time.Now()
+		for {
+			select {
+			case sample := <-c:
+				bytesSinceLastLog += float64(sample)
+			case now := <-t.C:
+				rate := 8.0 * bytesSinceLastLog / now.Sub(ll).Seconds()
+				s.log.Infof("got rate from MediaSource: %v bps\n", int(rate))
+				ll = now
+				bytesSinceLastLog = 0
+			}
+
+		}
+	}()
+	s.source.SetWriter(func(sample media.Sample) error {
+		c <- len(sample.Data)
+		return s.videoTrack.WriteSample(sample)
+	})
 
 	wg, ctx := errgroup.WithContext(ctx)
 
 	wg.Go(func() error {
+		onNewTargetBitrate := func(now time.Time, targetBitrate int) {
+			if now.Sub(lastLog) >= time.Second {
+				s.log.Infof("targetBitrate = %v\n", targetBitrate)
+				lastLog = now
+			}
+			if lastBitrate != targetBitrate {
+				s.source.SetTargetBitrate(targetBitrate)
+				lastBitrate = targetBitrate
+			}
+			fmt.Fprintf(s.ccLogWriter, "%v, %v\n", now.UnixMilli(), targetBitrate)
+		}
 		var estimator cc.BandwidthEstimator
 		select {
 		case estimator = <-s.estimatorChan:
+			s.estimator = estimator
+			s.estimator.OnTargetBitrateChange(func(newTarget int) {
+				onNewTargetBitrate(time.Now(), newTarget)
+			})
 		case <-ctx.Done():
 			return nil
 		}
@@ -167,15 +243,7 @@ func (s *Sender) Start(ctx context.Context) error {
 			select {
 			case now := <-ticker.C:
 				targetBitrate := estimator.GetTargetBitrate()
-				if now.Sub(lastLog) >= time.Second {
-					s.log.Infof("targetBitrate = %v\n", targetBitrate)
-					lastLog = now
-				}
-				if lastBitrate != targetBitrate {
-					s.source.SetTargetBitrate(targetBitrate)
-					lastBitrate = targetBitrate
-				}
-				fmt.Fprintf(s.ccLogWriter, "%v, %v\n", now.UnixMilli(), targetBitrate)
+				onNewTargetBitrate(now, targetBitrate)
 			case <-ctx.Done():
 				return nil
 			}

@@ -4,6 +4,7 @@ go 1.19
 
 require (
 	github.com/pion/interceptor v0.1.12
+	github.com/pion/interceptor/nada v0.1.12
 	github.com/pion/logging v0.2.2
 	github.com/pion/transport v0.13.1
 	github.com/pion/webrtc/v3 v3.1.43
@@ -31,6 +32,10 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	golang.org/x/crypto v0.0.0-20220516162934-403b01795ae8 // indirect
 	golang.org/x/net v0.0.0-20220630215102-69896b714898 // indirect
-	golang.org/x/sys v0.0.0-20220622161953-175b2fd9d664 // indirect
+	golang.org/x/sys v0.0.0-20220627191245-f75cf1eec38b // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/pion/interceptor/nada v0.1.12 => github.com/pion/interceptor v0.1.13-0.20220726180708-10f922bb7e5b
+
+replace github.com/pion/transport v0.13.1-0.20220423204831-750e80daf80c => ../transport

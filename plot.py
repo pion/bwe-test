@@ -137,10 +137,12 @@ def read_rtp_loss(send_file, receive_file, basetime):
             usecols=[0, 8],
         )
 
-    if not basetime:
-        basetime = df_send.index[0]
-
     df_all = df_send.merge(df_receive, on=['nr'], how='left', indicator=True)
+    df_all.index = df_all['time_send']
+
+    if not basetime:
+        basetime = df_all.index[0]
+
     df_all.index = pd.to_datetime(df_all['time_send'] - basetime, unit='ms')
     df_all['lost'] = df_all['_merge'] == 'left_only'
     df_all = df_all.resample('1s').agg({'time_send': 'count', 'lost': 'sum'})

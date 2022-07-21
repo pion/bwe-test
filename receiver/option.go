@@ -6,25 +6,28 @@ import (
 
 	"github.com/pion/bwe-test/logging"
 	"github.com/pion/interceptor/pkg/packetdump"
+	"github.com/pion/interceptor/pkg/rfc8888"
 	"github.com/pion/transport/vnet"
 	"github.com/pion/webrtc/v3"
 )
 
 type Option func(*Receiver) error
 
-func PacketLogWriter(rtpWriter, rtcpWriter io.Writer) Option {
+func PacketLogWriter(inboundRTPWriter, outboundRTCPWriter, inboundRTCPWriter io.Writer) Option {
 	return func(r *Receiver) error {
 		formatter := logging.RTPFormatter{}
 		rtpLogger, err := packetdump.NewReceiverInterceptor(
 			packetdump.RTPFormatter(formatter.RTPFormat),
-			packetdump.RTPWriter(rtpWriter),
+			packetdump.RTCPFormatter(logging.RTCPFormat),
+			packetdump.RTPWriter(inboundRTPWriter),
+			packetdump.RTCPWriter(inboundRTCPWriter),
 		)
 		if err != nil {
 			return err
 		}
 		rtcpLogger, err := packetdump.NewSenderInterceptor(
 			packetdump.RTCPFormatter(logging.RTCPFormat),
-			packetdump.RTCPWriter(rtcpWriter),
+			packetdump.RTCPWriter(outboundRTCPWriter),
 		)
 		if err != nil {
 			return err
@@ -32,6 +35,31 @@ func PacketLogWriter(rtpWriter, rtcpWriter io.Writer) Option {
 		r.registry.Add(rtpLogger)
 		r.registry.Add(rtcpLogger)
 		return nil
+	}
+}
+
+func RTCPReports() Option {
+	return func(r *Receiver) error {
+		return webrtc.ConfigureRTCPReports(r.registry)
+	}
+}
+
+func RFC8888() Option {
+	return func(r *Receiver) error {
+		r.mediaEngine.RegisterFeedback(webrtc.RTCPFeedback{Type: webrtc.TypeRTCPFBACK, Parameter: "ccfb"}, webrtc.RTPCodecTypeVideo)
+		r.mediaEngine.RegisterFeedback(webrtc.RTCPFeedback{Type: webrtc.TypeRTCPFBACK, Parameter: "ccfb"}, webrtc.RTPCodecTypeAudio)
+		generator, err := rfc8888.NewSenderInterceptor()
+		if err != nil {
+			return err
+		}
+		r.registry.Add(generator)
+		return nil
+	}
+}
+
+func TWCC() Option {
+	return func(r *Receiver) error {
+		return webrtc.ConfigureTWCCSender(r.mediaEngine, r.registry)
 	}
 }
 

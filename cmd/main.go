@@ -15,34 +15,39 @@ import (
 	"github.com/pion/bwe-test/sender"
 )
 
-const initialBitrate = 100_000
+const (
+	initialBitrate   = 100_000
+	minTargetBitrate = 100_000
+	maxTargetBitrate = 50_000_000
+)
 
 func realMain() error {
 	mode := flag.String("mode", "sender", "Mode: sender/receiver")
 	addr := flag.String("addr", ":4242", "address to listen on /connect to")
 	rtpLogFile := flag.String("rtp-log", "", "log RTP to file (use 'stdout' or a file name")
-	rtcpLogFile := flag.String("rtcp-log", "", "log RTCP to file (use 'stdout' or a file name")
+	rtcpInboundLogFile := flag.String("rtcp-inbound-log", "", "log RTCP to file (use 'stdout' or a file name")
+	rtcpOutboundLogFile := flag.String("rtcp-outbound-log", "", "log RTCP to file (use 'stdout' or a file name")
 	ccLogFile := flag.String("cc-log", "", "log congestion control target bitrate")
 	flag.Parse()
 
 	if *mode == "receiver" {
-		return receive(*addr, *rtpLogFile, *rtcpLogFile)
+		return receive(*addr, *rtpLogFile, *rtcpInboundLogFile, *rtcpOutboundLogFile)
 	}
 	if *mode == "sender" {
-		return send(*addr, *rtpLogFile, *rtcpLogFile, *ccLogFile)
+		return send(*addr, *rtpLogFile, *rtcpInboundLogFile, *rtcpOutboundLogFile, *ccLogFile)
 	}
 
 	log.Fatalf("invalid mode: %s\n", *mode)
 	return nil
 }
 
-func receive(addr, rtpLogFile, rtcpLogFile string) error {
+func receive(addr, rtpLogFile, rtcpInboundLogFile, rtcpOutboundLogFile string) error {
 	options := []receiver.Option{
-		receiver.PacketLogWriter(os.Stdout, os.Stdout),
 		receiver.DefaultInterceptors(),
 	}
 	var rtpLogger io.WriteCloser
-	var rtcpLogger io.WriteCloser
+	var rtcpInboundLogger io.WriteCloser
+	var rtcpOutboundLogger io.WriteCloser
 	var err error
 	if rtpLogFile != "" {
 		rtpLogger, err = logging.GetLogFile(rtpLogFile)
@@ -51,17 +56,24 @@ func receive(addr, rtpLogFile, rtcpLogFile string) error {
 		}
 		defer rtpLogger.Close()
 	}
-	if rtcpLogFile != "" {
-		rtcpLogger, err = logging.GetLogFile(rtcpLogFile)
+	if rtcpInboundLogFile != "" {
+		rtcpInboundLogger, err = logging.GetLogFile(rtcpInboundLogFile)
 		if err != nil {
 			return err
 		}
-		defer rtcpLogger.Close()
+		defer rtcpInboundLogger.Close()
 	}
-	if rtpLogger != nil || rtcpLogger != nil {
-		options = append(options, receiver.PacketLogWriter(rtpLogger, rtcpLogger))
+	if rtcpOutboundLogFile != "" {
+		rtcpOutboundLogger, err = logging.GetLogFile(rtcpOutboundLogFile)
+		if err != nil {
+			return err
+		}
+		defer rtcpOutboundLogger.Close()
 	}
-	r, err := receiver.NewReceiver(options...)
+	if rtpLogger != nil || rtcpInboundLogger != nil {
+		options = append(options, receiver.PacketLogWriter(rtpLogger, rtcpOutboundLogger, rtcpInboundLogger))
+	}
+	r, err := receiver.New(options...)
 	if err != nil {
 		return err
 	}
@@ -74,13 +86,14 @@ func receive(addr, rtpLogFile, rtcpLogFile string) error {
 	return nil
 }
 
-func send(addr, rtpLogFile, rtcpLogFile, ccLogFile string) error {
+func send(addr, rtpLogFile, rtcpInboundLogFile, rtcpOutboundLogFile, ccLogFile string) error {
 	options := []sender.Option{
 		sender.DefaultInterceptors(),
-		sender.GCC(initialBitrate),
+		sender.GCC(initialBitrate, minTargetBitrate, maxTargetBitrate, true),
 	}
 	var rtpLogger io.WriteCloser
-	var rtcpLogger io.WriteCloser
+	var rtcpInboundLogger io.WriteCloser
+	var rtcpOutboundLogger io.WriteCloser
 	var err error
 	if rtpLogFile != "" {
 		rtpLogger, err = logging.GetLogFile(rtpLogFile)
@@ -89,12 +102,19 @@ func send(addr, rtpLogFile, rtcpLogFile, ccLogFile string) error {
 		}
 		defer rtpLogger.Close()
 	}
-	if rtcpLogFile != "" {
-		rtcpLogger, err = logging.GetLogFile(rtcpLogFile)
+	if rtcpInboundLogFile != "" {
+		rtcpInboundLogger, err = logging.GetLogFile(rtcpInboundLogFile)
 		if err != nil {
 			return err
 		}
-		defer rtcpLogger.Close()
+		defer rtcpInboundLogger.Close()
+	}
+	if rtcpOutboundLogFile != "" {
+		rtcpOutboundLogger, err = logging.GetLogFile(rtcpOutboundLogFile)
+		if err != nil {
+			return err
+		}
+		defer rtcpOutboundLogger.Close()
 	}
 	if ccLogFile != "" {
 		var ccLogger io.WriteCloser
@@ -105,10 +125,10 @@ func send(addr, rtpLogFile, rtcpLogFile, ccLogFile string) error {
 		defer ccLogger.Close()
 		options = append(options, sender.CCLogWriter(ccLogger))
 	}
-	if rtpLogger != nil || rtcpLogger != nil {
-		options = append(options, sender.PacketLogWriter(rtpLogger, rtcpLogger))
+	if rtpLogger != nil || rtcpInboundLogger != nil {
+		options = append(options, sender.PacketLogWriter(rtpLogger, rtcpOutboundLogger, rtcpInboundLogger))
 	}
-	s, err := sender.NewSender(
+	s, err := sender.New(
 		sender.NewStatisticalEncoderSource(),
 		options...,
 	)

@@ -2,6 +2,7 @@ package logging
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pion/interceptor"
@@ -78,13 +79,25 @@ func (f *RTPFormatter) RTPFormat(pkt *rtp.Packet, _ interceptor.Attributes) stri
 func RTCPFormat(pkts []rtcp.Packet, _ interceptor.Attributes) string {
 	now := time.Now().UnixMilli()
 	size := 0
+	var types []string
 	for _, pkt := range pkts {
 		switch feedback := pkt.(type) {
 		case *rtcp.TransportLayerCC:
 			size += int(feedback.Len())
+			types = append(types, "twcc")
+		case *rtcp.CCFeedbackReport:
+			size += int(feedback.Len())
+			types = append(types, "ccfb")
+		case *rtcp.SenderReport:
+			size += 4 * int(feedback.Header().Length+1)
+			types = append(types, "sr")
+		case *rtcp.ReceiverReport:
+			size += 4 * int(feedback.Header().Length+1)
+			types = append(types, "rr")
 		case *rtcp.RawPacket:
 			size += int(len(*feedback))
+			types = append(types, "raw")
 		}
 	}
-	return fmt.Sprintf("%v, %v\n", now, size)
+	return fmt.Sprintf("%v, %v, %v\n", now, size, strings.Join(types, " "))
 }
