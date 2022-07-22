@@ -3,7 +3,7 @@ module github.com/pion/bwe-test
 go 1.19
 
 require (
-	github.com/pion/interceptor v0.1.12-0.20220524135124-0748586beeec
+	github.com/pion/interceptor v0.1.12
 	github.com/pion/logging v0.2.2
 	github.com/pion/transport v0.13.1
 	github.com/pion/webrtc/v3 v3.1.43
