@@ -1,6 +1,6 @@
 module github.com/pion/bwe-test
 
-go 1.18
+go 1.19
 
 require (
 	github.com/pion/interceptor v0.1.12-0.20220524135124-0748586beeec
