@@ -38,9 +38,15 @@ func PacketLogWriter(inboundRTPWriter, outboundRTCPWriter, inboundRTCPWriter io.
 	}
 }
 
-func RTCPReports() Option {
+func DefaultInterceptors() Option {
 	return func(r *Receiver) error {
-		return webrtc.ConfigureRTCPReports(r.registry)
+		return webrtc.RegisterDefaultInterceptors(r.mediaEngine, r.registry)
+	}
+}
+
+func TWCC() Option {
+	return func(r *Receiver) error {
+		return webrtc.ConfigureTWCCSender(r.mediaEngine, r.registry)
 	}
 }
 
@@ -57,15 +63,15 @@ func RFC8888() Option {
 	}
 }
 
-func TWCC() Option {
+func RTCPReports() Option {
 	return func(r *Receiver) error {
-		return webrtc.ConfigureTWCCSender(r.mediaEngine, r.registry)
+		return webrtc.ConfigureRTCPReports(r.registry)
 	}
 }
 
-func DefaultInterceptors() Option {
+func NACK() Option {
 	return func(r *Receiver) error {
-		return webrtc.RegisterDefaultInterceptors(r.mediaEngine, r.registry)
+		return webrtc.ConfigureNack(r.mediaEngine, r.registry)
 	}
 }
 

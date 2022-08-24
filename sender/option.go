@@ -46,6 +46,12 @@ func DefaultInterceptors() Option {
 	}
 }
 
+func NACK() Option {
+	return func(s *Sender) error {
+		return webrtc.ConfigureNack(s.mediaEngine, s.registry)
+	}
+}
+
 func RTCPReports() Option {
 	return func(s *Sender) error {
 		return webrtc.ConfigureRTCPReports(s.registry)

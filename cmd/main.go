@@ -63,7 +63,8 @@ func receive(addr, rtpLogFile, rtcpInboundLogFile, rtcpOutboundLogFile string) e
 
 	options = append(options,
 		receiver.PacketLogWriter(rtpLogger, rtcpOutboundLogger, rtcpInboundLogger),
-		receiver.DefaultInterceptors(),
+		receiver.RTCPReports(),
+		receiver.TWCC(),
 	)
 
 	r, err := receiver.New(options...)
@@ -109,7 +110,7 @@ func send(addr, rtpLogFile, rtcpInboundLogFile, rtcpOutboundLogFile, ccLogFile s
 	options = append(options,
 		sender.CCLogWriter(ccLogger),
 		sender.PacketLogWriter(rtpLogger, rtcpOutboundLogger, rtcpInboundLogger),
-		sender.DefaultInterceptors(),
+		sender.RTCPReports(),
 		sender.GCC(initialBitrate, minTargetBitrate, maxTargetBitrate, true),
 	)
 	s, err := sender.New(
