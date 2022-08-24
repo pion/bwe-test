@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"flag"
-	"io"
 	"log"
 	"net/http"
 	"os"
@@ -42,37 +41,31 @@ func realMain() error {
 }
 
 func receive(addr, rtpLogFile, rtcpInboundLogFile, rtcpOutboundLogFile string) error {
-	options := []receiver.Option{
+	options := []receiver.Option{}
+
+	rtpLogger, err := logging.GetLogFile(rtpLogFile)
+	if err != nil {
+		return err
+	}
+	defer rtpLogger.Close()
+
+	rtcpInboundLogger, err := logging.GetLogFile(rtcpInboundLogFile)
+	if err != nil {
+		return err
+	}
+	defer rtcpInboundLogger.Close()
+
+	rtcpOutboundLogger, err := logging.GetLogFile(rtcpOutboundLogFile)
+	if err != nil {
+		return err
+	}
+	defer rtcpOutboundLogger.Close()
+
+	options = append(options,
+		receiver.PacketLogWriter(rtpLogger, rtcpOutboundLogger, rtcpInboundLogger),
 		receiver.DefaultInterceptors(),
-	}
-	var rtpLogger io.WriteCloser
-	var rtcpInboundLogger io.WriteCloser
-	var rtcpOutboundLogger io.WriteCloser
-	var err error
-	if rtpLogFile != "" {
-		rtpLogger, err = logging.GetLogFile(rtpLogFile)
-		if err != nil {
-			return err
-		}
-		defer rtpLogger.Close()
-	}
-	if rtcpInboundLogFile != "" {
-		rtcpInboundLogger, err = logging.GetLogFile(rtcpInboundLogFile)
-		if err != nil {
-			return err
-		}
-		defer rtcpInboundLogger.Close()
-	}
-	if rtcpOutboundLogFile != "" {
-		rtcpOutboundLogger, err = logging.GetLogFile(rtcpOutboundLogFile)
-		if err != nil {
-			return err
-		}
-		defer rtcpOutboundLogger.Close()
-	}
-	if rtpLogger != nil || rtcpInboundLogger != nil {
-		options = append(options, receiver.PacketLogWriter(rtpLogger, rtcpOutboundLogger, rtcpInboundLogger))
-	}
+	)
+
 	r, err := receiver.New(options...)
 	if err != nil {
 		return err
@@ -87,47 +80,38 @@ func receive(addr, rtpLogFile, rtcpInboundLogFile, rtcpOutboundLogFile string) e
 }
 
 func send(addr, rtpLogFile, rtcpInboundLogFile, rtcpOutboundLogFile, ccLogFile string) error {
-	options := []sender.Option{
+	options := []sender.Option{}
+
+	rtpLogger, err := logging.GetLogFile(rtpLogFile)
+	if err != nil {
+		return err
+	}
+	defer rtpLogger.Close()
+
+	rtcpInboundLogger, err := logging.GetLogFile(rtcpInboundLogFile)
+	if err != nil {
+		return err
+	}
+	defer rtcpInboundLogger.Close()
+
+	rtcpOutboundLogger, err := logging.GetLogFile(rtcpOutboundLogFile)
+	if err != nil {
+		return err
+	}
+	defer rtcpOutboundLogger.Close()
+
+	ccLogger, err := logging.GetLogFile(ccLogFile)
+	if err != nil {
+		return err
+	}
+	defer ccLogger.Close()
+
+	options = append(options,
+		sender.CCLogWriter(ccLogger),
+		sender.PacketLogWriter(rtpLogger, rtcpOutboundLogger, rtcpInboundLogger),
 		sender.DefaultInterceptors(),
 		sender.GCC(initialBitrate, minTargetBitrate, maxTargetBitrate, true),
-	}
-	var rtpLogger io.WriteCloser
-	var rtcpInboundLogger io.WriteCloser
-	var rtcpOutboundLogger io.WriteCloser
-	var err error
-	if rtpLogFile != "" {
-		rtpLogger, err = logging.GetLogFile(rtpLogFile)
-		if err != nil {
-			return err
-		}
-		defer rtpLogger.Close()
-	}
-	if rtcpInboundLogFile != "" {
-		rtcpInboundLogger, err = logging.GetLogFile(rtcpInboundLogFile)
-		if err != nil {
-			return err
-		}
-		defer rtcpInboundLogger.Close()
-	}
-	if rtcpOutboundLogFile != "" {
-		rtcpOutboundLogger, err = logging.GetLogFile(rtcpOutboundLogFile)
-		if err != nil {
-			return err
-		}
-		defer rtcpOutboundLogger.Close()
-	}
-	if ccLogFile != "" {
-		var ccLogger io.WriteCloser
-		ccLogger, err = logging.GetLogFile(ccLogFile)
-		if err != nil {
-			return err
-		}
-		defer ccLogger.Close()
-		options = append(options, sender.CCLogWriter(ccLogger))
-	}
-	if rtpLogger != nil || rtcpInboundLogger != nil {
-		options = append(options, sender.PacketLogWriter(rtpLogger, rtcpOutboundLogger, rtcpInboundLogger))
-	}
+	)
 	s, err := sender.New(
 		sender.NewStatisticalEncoderSource(),
 		options...,
