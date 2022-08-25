@@ -37,5 +37,3 @@ require (
 )
 
 replace github.com/pion/interceptor/nada v0.1.12 => github.com/pion/interceptor v0.1.13-0.20220726180708-10f922bb7e5b
-
-replace github.com/pion/transport v0.13.1-0.20220423204831-750e80daf80c => ../transport
