@@ -9,7 +9,7 @@ import (
 
 	"github.com/pion/interceptor"
 	"github.com/pion/logging"
-	"github.com/pion/transport/vnet"
+	"github.com/pion/transport/v2/vnet"
 	"github.com/pion/webrtc/v3"
 )
 

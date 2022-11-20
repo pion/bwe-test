@@ -8,7 +8,7 @@ import (
 	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/interceptor/pkg/packetdump"
-	"github.com/pion/transport/vnet"
+	"github.com/pion/transport/v2/vnet"
 	"github.com/pion/webrtc/v3"
 )
 

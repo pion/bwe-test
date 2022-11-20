@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/pion/logging"
-	"github.com/pion/transport/vnet"
+	"github.com/pion/transport/v2/vnet"
 )
 
 type RouterWithConfig struct {
@@ -136,10 +136,15 @@ func (m *NetworkManager) GetLeftNet() (*vnet.Net, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	net := vnet.NewNet(&vnet.NetConfig{
+
+	net, err := vnet.NewNet(&vnet.NetConfig{
 		StaticIPs: []string{privateIP},
 		StaticIP:  "",
 	})
+	if err != nil {
+		return nil, "", err
+	}
+
 	err = m.leftRouter.AddNet(net)
 	if err != nil {
 		return nil, "", err
@@ -152,10 +157,15 @@ func (m *NetworkManager) GetRightNet() (*vnet.Net, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	net := vnet.NewNet(&vnet.NetConfig{
+
+	net, err := vnet.NewNet(&vnet.NetConfig{
 		StaticIPs: []string{privateIP},
 		StaticIP:  "",
 	})
+	if err != nil {
+		return nil, "", err
+	}
+
 	err = m.rightRouter.AddNet(net)
 	if err != nil {
 		return nil, "", err
