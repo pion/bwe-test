@@ -22,7 +22,7 @@ real-time media described in [RFC
 
 ### Implemented/Planned Test Cases and Applications
 
-The current implementation uses [Vnet from
+The current implementation uses [`vnet.Net` from
 pion/transport](https://github.com/pion/transport) to simulate network
 constraints. There are two test applications, one using a simple simulcast-like
 setup and the other one using adaptive bitrate streaming with a synthetic
