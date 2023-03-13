@@ -16,8 +16,7 @@
 <br>
 
 This repository implements the test cases for congestion control for interactive
-real-time media described in [RFC
-8867](https://www.rfc-editor.org/rfc/rfc8867.html) for the algorithm(s)
+real-time media described in [RFC8867](https://www.rfc-editor.org/rfc/rfc8867.html) for the algorithm(s)
 [implemented in Pion](https://github.com/pion/interceptor).
 
 ### Implemented/Planned Test Cases and Applications
