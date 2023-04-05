@@ -20,7 +20,6 @@ real-time media described in [RFC8867](https://www.rfc-editor.org/rfc/rfc8867.ht
 [implemented in Pion](https://github.com/pion/interceptor).
 
 ### Implemented/Planned Test Cases and Applications
-
 The current implementation uses [`vnet.Net` from
 pion/transport](https://github.com/pion/transport) to simulate network
 constraints. There are two test applications, one using a simple simulcast-like
@@ -46,14 +45,12 @@ and place them in the `vnet` directory.
 - [ ] **Multiple Bottlenecks**
 
 ### Evaluation
-
 [RFC 8868](https://www.rfc-editor.org/rfc/rfc8868.html) describes guidelines to
 evaluate congestion control algorithms for interactive real-time media.
 Currently, live statistics can be viewed during the test run via a web
 interface. In future, we might automate the evaluation.
 
 ### Running
-
 To run the tests, run `go test -v ./vnet/`.
 
 ### Roadmap
@@ -68,7 +65,7 @@ We are always looking to support **your projects**. Please reach out if you have
 If you need commercial support or don't want to use public methods you can contact us at [team@pion.ly](mailto:team@pion.ly)
 
 ### Contributing
-Check out the **[contributing wiki](https://github.com/pion/webrtc/wiki/Contributing)** to join the group of amazing people making this project possible: [AUTHORS.txt](./AUTHORS.txt)
+Check out the [contributing wiki](https://github.com/pion/webrtc/wiki/Contributing) to join the group of amazing people making this project possible: [AUTHORS.txt](./AUTHORS.txt)
 
 ### License
 MIT License - see [LICENSE](LICENSE) for full text
