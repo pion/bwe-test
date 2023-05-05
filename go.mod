@@ -8,7 +8,7 @@ require (
 	github.com/pion/rtp v1.7.13
 	github.com/pion/webrtc/v3 v3.2.1
 	github.com/stretchr/testify v1.8.2
-	golang.org/x/sync v0.1.0
+	golang.org/x/sync v0.2.0
 )
 
 require github.com/pion/udp/v2 v2.0.1 // indirect
