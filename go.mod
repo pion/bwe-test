@@ -29,7 +29,7 @@ require (
 	github.com/pion/srtp/v2 v2.0.14 // indirect
 	github.com/pion/stun v0.5.2 // indirect
 	github.com/pion/transport v0.14.1 // indirect
-	github.com/pion/transport/v2 v2.2.0
+	github.com/pion/transport/v2 v2.2.1
 	github.com/pion/turn/v2 v2.1.0 // indirect
 	github.com/pion/udp v0.1.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
