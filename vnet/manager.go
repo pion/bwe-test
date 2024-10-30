@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/pion/logging"
-	"github.com/pion/transport/v2/vnet"
+	"github.com/pion/transport/v3/vnet"
 )
 
 type RouterWithConfig struct {

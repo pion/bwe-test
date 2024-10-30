@@ -11,8 +11,8 @@ import (
 	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/interceptor/pkg/packetdump"
-	"github.com/pion/transport/v2/vnet"
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/transport/v3/vnet"
+	"github.com/pion/webrtc/v4"
 )
 
 type Option func(*Sender) error
@@ -76,7 +76,7 @@ func GCC(initialBitrate int) Option {
 
 func SetVnet(v *vnet.Net, publicIPs []string) Option {
 	return func(s *Sender) error {
-		s.settingEngine.SetVNet(v)
+		s.settingEngine.SetNet(v)
 		s.settingEngine.SetICETimeouts(time.Second, time.Second, 200*time.Millisecond)
 		s.settingEngine.SetNAT1To1IPs(publicIPs, webrtc.ICECandidateTypeHost)
 		return nil

@@ -9,8 +9,8 @@ import (
 
 	"github.com/pion/bwe-test/logging"
 	"github.com/pion/interceptor/pkg/packetdump"
-	"github.com/pion/transport/v2/vnet"
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/transport/v3/vnet"
+	"github.com/pion/webrtc/v4"
 )
 
 type Option func(*Receiver) error
@@ -46,7 +46,7 @@ func DefaultInterceptors() Option {
 
 func SetVnet(v *vnet.Net, publicIPs []string) Option {
 	return func(r *Receiver) error {
-		r.settingEngine.SetVNet(v)
+		r.settingEngine.SetNet(v)
 		r.settingEngine.SetICETimeouts(time.Second, time.Second, 200*time.Millisecond)
 		r.settingEngine.SetNAT1To1IPs(publicIPs, webrtc.ICECandidateTypeHost)
 		return nil

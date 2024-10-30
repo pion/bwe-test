@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/pion/logging"
-	"github.com/pion/webrtc/v3/pkg/media"
-	"github.com/pion/webrtc/v3/pkg/media/ivfreader"
+	"github.com/pion/webrtc/v4/pkg/media"
+	"github.com/pion/webrtc/v4/pkg/media/ivfreader"
 )
 
 const (

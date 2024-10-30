@@ -9,7 +9,7 @@ import (
 
 	"github.com/pion/bwe-test/syncodec"
 	"github.com/pion/logging"
-	"github.com/pion/webrtc/v3/pkg/media"
+	"github.com/pion/webrtc/v4/pkg/media"
 )
 
 // StatisticalEncoderSource is a source that fakes a media encoder using syncodec.StatisticalCodec
