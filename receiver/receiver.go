@@ -9,8 +9,8 @@ import (
 
 	"github.com/pion/interceptor"
 	"github.com/pion/logging"
-	"github.com/pion/transport/v2/vnet"
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/transport/v3/vnet"
+	"github.com/pion/webrtc/v4"
 )
 
 type Receiver struct {

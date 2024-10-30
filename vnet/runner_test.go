@@ -11,7 +11,7 @@ import (
 	"github.com/pion/bwe-test/sender"
 
 	"github.com/pion/bwe-test/receiver"
-	"github.com/pion/transport/v2/vnet"
+	"github.com/pion/transport/v3/vnet"
 	"github.com/stretchr/testify/assert"
 )
 
