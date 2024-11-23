@@ -7,7 +7,7 @@ require (
 	github.com/pion/logging v0.2.2
 	github.com/pion/rtp v1.8.1
 	github.com/pion/webrtc/v3 v3.2.4
-	github.com/stretchr/testify v1.8.3
+	github.com/stretchr/testify v1.10.0
 	golang.org/x/sync v0.3.0
 )
 
