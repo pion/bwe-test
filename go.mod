@@ -7,7 +7,7 @@ require (
 	github.com/pion/logging v0.2.2
 	github.com/pion/rtp v1.8.1
 	github.com/pion/webrtc/v3 v3.2.4
-	github.com/stretchr/testify v1.8.3
+	github.com/stretchr/testify v1.10.0
 	golang.org/x/sync v0.3.0
 )
 
@@ -22,7 +22,7 @@ require (
 	github.com/pion/ice/v2 v2.3.4 // indirect
 	github.com/pion/mdns v0.0.7 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/rtcp v1.2.10
+	github.com/pion/rtcp v1.2.15
 	github.com/pion/rtp/v2 v2.0.0
 	github.com/pion/sctp v1.8.7 // indirect
 	github.com/pion/sdp/v3 v3.0.6 // indirect
