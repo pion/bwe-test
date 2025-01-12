@@ -7,12 +7,14 @@ import (
 	"io"
 	"time"
 
-	"github.com/pion/bwe-test/logging"
 	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/interceptor/pkg/packetdump"
+	plogging "github.com/pion/logging"
 	"github.com/pion/transport/v3/vnet"
 	"github.com/pion/webrtc/v4"
+
+	"github.com/pion/bwe-test/logging"
 )
 
 type Option func(*Sender) error
@@ -86,6 +88,14 @@ func SetVnet(v *vnet.Net, publicIPs []string) Option {
 func SetMediaSource(source MediaSource) Option {
 	return func(s *Sender) error {
 		s.source = source
+		return nil
+	}
+}
+
+func SetLoggerFactory(loggerFactory plogging.LoggerFactory) Option {
+	return func(s *Sender) error {
+		s.settingEngine.LoggerFactory = loggerFactory
+		s.log = loggerFactory.NewLogger("sender")
 		return nil
 	}
 }

@@ -7,10 +7,12 @@ import (
 	"io"
 	"time"
 
-	"github.com/pion/bwe-test/logging"
 	"github.com/pion/interceptor/pkg/packetdump"
+	plogging "github.com/pion/logging"
 	"github.com/pion/transport/v3/vnet"
 	"github.com/pion/webrtc/v4"
+
+	"github.com/pion/bwe-test/logging"
 )
 
 type Option func(*Receiver) error
@@ -49,6 +51,14 @@ func SetVnet(v *vnet.Net, publicIPs []string) Option {
 		r.settingEngine.SetNet(v)
 		r.settingEngine.SetICETimeouts(time.Second, time.Second, 200*time.Millisecond)
 		r.settingEngine.SetNAT1To1IPs(publicIPs, webrtc.ICECandidateTypeHost)
+		return nil
+	}
+}
+
+func SetLoggerFactory(loggerFactory plogging.LoggerFactory) Option {
+	return func(s *Receiver) error {
+		s.settingEngine.LoggerFactory = loggerFactory
+		s.log = loggerFactory.NewLogger("receiver")
 		return nil
 	}
 }
