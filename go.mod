@@ -5,7 +5,7 @@ go 1.20
 require (
 	github.com/pion/interceptor v0.1.37
 	github.com/pion/logging v0.2.3
-	github.com/pion/rtp v1.8.11
+	github.com/pion/rtp v1.8.13
 	github.com/pion/transport/v3 v3.0.7
 	github.com/pion/webrtc/v4 v4.0.8
 	github.com/stretchr/testify v1.10.0
