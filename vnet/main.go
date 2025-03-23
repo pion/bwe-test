@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
 // SPDX-License-Identifier: MIT
 
+// Package main implements virtual network functionality for bandwidth estimation tests.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -16,6 +18,7 @@ import (
 	"github.com/pion/transport/v3/vnet"
 )
 
+// senderMode defines the type of sender to use in the test.
 type senderMode int
 
 const (
@@ -23,6 +26,7 @@ const (
 	abrSenderMode
 )
 
+// flowMode defines whether to use a single flow or multiple flows in the test.
 type flowMode int
 
 const (
@@ -82,6 +86,8 @@ func main() {
 	}
 }
 
+var errUnknownLogLevel = errors.New("unknown log level")
+
 func getLoggerFactory(logLevel string) (*logging.DefaultLoggerFactory, error) {
 	logLevels := map[string]logging.LogLevel{
 		"disable": logging.LogLevelDisabled,
@@ -94,7 +100,7 @@ func getLoggerFactory(logLevel string) (*logging.DefaultLoggerFactory, error) {
 
 	level, ok := logLevels[strings.ToLower(logLevel)]
 	if !ok {
-		return nil, fmt.Errorf("unknown log level: %v", logLevel)
+		return nil, fmt.Errorf("%w: %s", errUnknownLogLevel, logLevel)
 	}
 
 	loggerFactory := &logging.DefaultLoggerFactory{
@@ -106,6 +112,7 @@ func getLoggerFactory(logLevel string) (*logging.DefaultLoggerFactory, error) {
 	return loggerFactory, nil
 }
 
+// Runner manages the execution of bandwidth estimation tests.
 type Runner struct {
 	loggerFactory *logging.DefaultLoggerFactory
 	logger        logging.LeveledLogger
@@ -114,21 +121,25 @@ type Runner struct {
 	flowMode      flowMode
 }
 
+var errUnknownFlowMode = errors.New("unknown flow mode")
+
+// Run executes the test based on the configured flow mode.
 func (r *Runner) Run() error {
 	switch r.flowMode {
 	case singleFlowMode:
 		err := r.runVariableAvailableCapacitySingleFlow()
 		if err != nil {
-			return fmt.Errorf("run variable availiable capacity single flow: %w", err)
+			return fmt.Errorf("run variable available capacity single flow: %w", err)
 		}
 	case multipleFlowsMode:
 		err := r.runVariableAvailableCapacityMultipleFlows()
 		if err != nil {
-			return fmt.Errorf("run variable availiable capacity multiple flows: %w", err)
+			return fmt.Errorf("run variable available capacity multiple flows: %w", err)
 		}
 	default:
-		return fmt.Errorf("unknown flow mode: %v", r.flowMode)
+		return fmt.Errorf("%w: %v", errUnknownFlowMode, r.flowMode)
 	}
+
 	return nil
 }
 
@@ -139,7 +150,7 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 	}
 
 	dataDir := fmt.Sprintf("data/%v", r.name)
-	err = os.MkdirAll(dataDir, os.ModePerm)
+	err = os.MkdirAll(dataDir, 0o750)
 	if err != nil {
 		return fmt.Errorf("mkdir data: %w", err)
 	}
@@ -149,7 +160,7 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 		return fmt.Errorf("setup simple flow: %w", err)
 	}
 	defer func(flow Flow) {
-		err := flow.Close()
+		err = flow.Close()
 		if err != nil {
 			r.logger.Errorf("flow close: %v", err)
 		}
@@ -158,13 +169,13 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		err = flow.sender.Start(ctx)
+		err = flow.sender.sender.Start(ctx)
 		if err != nil {
 			r.logger.Errorf("sender start: %v", err)
 		}
 	}()
 
-	c := pathCharacteristics{
+	path := pathCharacteristics{
 		referenceCapacity: 1 * vnet.MBit,
 		phases: []phase{
 			{
@@ -189,7 +200,8 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 			},
 		},
 	}
-	r.runNetworkSimulation(c, nm)
+	r.runNetworkSimulation(path, nm)
+
 	return nil
 }
 
@@ -200,7 +212,7 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 	}
 
 	dataDir := fmt.Sprintf("data/%v", r.name)
-	err = os.MkdirAll(dataDir, os.ModePerm)
+	err = os.MkdirAll(dataDir, 0o750)
 	if err != nil {
 		return fmt.Errorf("mkdir data: %w", err)
 	}
@@ -208,7 +220,7 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 	for i := 0; i < 2; i++ {
 		flow, err := NewSimpleFlow(r.loggerFactory, nm, i, r.senderMode, dataDir)
 		defer func(flow Flow) {
-			err := flow.Close()
+			err = flow.Close()
 			if err != nil {
 				r.logger.Errorf("flow close: %v", err)
 			}
@@ -217,14 +229,14 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		go func() {
-			err = flow.sender.Start(ctx)
+			err = flow.sender.sender.Start(ctx)
 			if err != nil {
 				r.logger.Errorf("sender start: %v", err)
 			}
 		}()
 	}
 
-	c := pathCharacteristics{
+	path := pathCharacteristics{
 		referenceCapacity: 1 * vnet.MBit,
 		phases: []phase{
 			{
@@ -255,15 +267,18 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 			},
 		},
 	}
-	r.runNetworkSimulation(c, nm)
+	r.runNetworkSimulation(path, nm)
+
 	return nil
 }
 
+// pathCharacteristics defines the network characteristics for the test.
 type pathCharacteristics struct {
 	referenceCapacity int
 	phases            []phase
 }
 
+// phase defines a single phase of the network simulation with specific characteristics.
 type phase struct {
 	duration      time.Duration
 	capacityRatio float64
@@ -272,7 +287,7 @@ type phase struct {
 
 func (r *Runner) runNetworkSimulation(c pathCharacteristics, nm *NetworkManager) {
 	for _, phase := range c.phases {
-		r.logger.Infof("enter next phase: %v\n", phase)
+		r.logger.Infof("enter next phase: %v", phase)
 		nm.SetCapacity(
 			int(float64(c.referenceCapacity)*phase.capacityRatio),
 			phase.maxBurst,

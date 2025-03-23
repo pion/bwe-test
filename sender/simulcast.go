@@ -1,10 +1,12 @@
 // SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
 // SPDX-License-Identifier: MIT
 
+// Package sender implements WebRTC sender functionality for bandwidth estimation tests.
 package sender
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"sync"
@@ -30,6 +32,8 @@ const (
 	ivfHeaderSize = 32
 )
 
+// SimulcastFilesSource is a media source that switches between different quality
+// video files based on the target bitrate.
 type SimulcastFilesSource struct {
 	qualityLevels []struct {
 		fileName string
@@ -43,13 +47,17 @@ type SimulcastFilesSource struct {
 	log                 logging.LeveledLogger
 }
 
+// Close stops the simulcast source and cleans up resources.
 func (s *SimulcastFilesSource) Close() error {
 	defer s.wg.Wait()
 	close(s.done)
+
 	return nil
 }
 
-// NewSimulcastFilesSource returns a new SimulcastFilesSource
+var errUninitializedSimulcastFileSource = errors.New("write on uninitialized SimulcastFileSource.WriteSample")
+
+// NewSimulcastFilesSource returns a new SimulcastFilesSource.
 func NewSimulcastFilesSource() *SimulcastFilesSource {
 	return &SimulcastFilesSource{
 		qualityLevels: []struct {
@@ -62,8 +70,8 @@ func NewSimulcastFilesSource() *SimulcastFilesSource {
 		},
 		currentQualityLevel: 0,
 		updateTargetBitrate: make(chan int),
-		WriteSample: func(sample media.Sample) error {
-			panic("write on uninitialized SimulcastFileSource.WriteSample")
+		WriteSample: func(_ media.Sample) error {
+			return errUninitializedSimulcastFileSource
 		},
 		done: make(chan struct{}),
 		wg:   sync.WaitGroup{},
@@ -71,14 +79,19 @@ func NewSimulcastFilesSource() *SimulcastFilesSource {
 	}
 }
 
+// SetTargetBitrate sets the target bitrate for the simulcast source.
 func (s *SimulcastFilesSource) SetTargetBitrate(rate int) {
 	s.updateTargetBitrate <- rate
 }
 
+// SetWriter sets the sample writer function.
 func (s *SimulcastFilesSource) SetWriter(f func(sample media.Sample) error) {
 	s.WriteSample = f
 }
 
+// Start begins the simulcast process and runs until context is done.
+//
+//nolint:gocognit,cyclop
 func (s *SimulcastFilesSource) Start(ctx context.Context) error {
 	files := make(map[string]*os.File)
 	file, err := os.Open(s.qualityLevels[s.currentQualityLevel].fileName)
@@ -90,7 +103,7 @@ func (s *SimulcastFilesSource) Start(ctx context.Context) error {
 		for _, file := range files {
 			err1 := file.Close()
 			if err1 != nil {
-				s.log.Infof("failed to close file %v: %v", file.Name(), err1)
+				s.log.Errorf("failed to close file %v: %v", file.Name(), err1)
 			}
 		}
 	}()
@@ -105,7 +118,8 @@ func (s *SimulcastFilesSource) Start(ctx context.Context) error {
 	// It is important to use a time.Ticker instead of time.Sleep because
 	// * avoids accumulating skew, just calling time.Sleep didn't compensate for the time spent parsing the data
 	// * works around latency issues with Sleep (see https://github.com/golang/go/issues/44343)
-	ticker := time.NewTicker(time.Millisecond * time.Duration((float32(header.TimebaseNumerator)/float32(header.TimebaseDenominator))*1000))
+	tickerMS := int64(float32(header.TimebaseNumerator) / float32(header.TimebaseDenominator) * 1000)
+	ticker := time.NewTicker(time.Millisecond * time.Duration(tickerMS))
 	var frame []byte
 	frameHeader := &ivfreader.IVFFrameHeader{}
 	currentTimestamp := uint64(0)
@@ -113,6 +127,7 @@ func (s *SimulcastFilesSource) Start(ctx context.Context) error {
 	setReaderFile := func(filename string) (f func(_ int64) io.Reader, err error) {
 		file, ok := files[s.qualityLevels[s.currentQualityLevel].fileName]
 		if !ok {
+			//nolint:gosec
 			file, err = os.Open(filename)
 			if err != nil {
 				return nil, err
@@ -122,13 +137,16 @@ func (s *SimulcastFilesSource) Start(ctx context.Context) error {
 		if _, err = file.Seek(ivfHeaderSize, io.SeekStart); err != nil {
 			return nil, err
 		}
+
 		return func(_ int64) io.Reader {
 			return file
 		}, nil
 	}
 
 	switchQualityLevel := func(newQualityLevel int) error {
-		s.log.Infof("Switching from %s to %s \n", s.qualityLevels[s.currentQualityLevel].fileName, s.qualityLevels[newQualityLevel].fileName)
+		from := s.qualityLevels[s.currentQualityLevel].fileName
+		to := s.qualityLevels[newQualityLevel].fileName
+		s.log.Infof("Switching from %s to %s", from, to)
 		s.currentQualityLevel = newQualityLevel
 
 		readerFile, err1 := setReaderFile(s.qualityLevels[s.currentQualityLevel].fileName)
@@ -138,12 +156,11 @@ func (s *SimulcastFilesSource) Start(ctx context.Context) error {
 		ivf.ResetReader(readerFile)
 		for {
 			if frame, frameHeader, err = ivf.ParseNextFrame(); err != nil {
-				break
+				return err
 			} else if frameHeader.Timestamp >= currentTimestamp && frame[0]&0x1 == 0 {
-				break
+				return nil
 			}
 		}
-		return nil
 	}
 
 	targetBitrate := initialBitrate
@@ -152,6 +169,7 @@ func (s *SimulcastFilesSource) Start(ctx context.Context) error {
 		case rate := <-s.updateTargetBitrate:
 			targetBitrate = rate
 		case <-ticker.C:
+			haveBetterQuality := len(s.qualityLevels) > (s.currentQualityLevel + 1)
 			switch {
 			// If current quality level is below target bitrate drop to level below
 			case s.currentQualityLevel != 0 && targetBitrate < s.qualityLevels[s.currentQualityLevel].bitrate:
@@ -161,7 +179,7 @@ func (s *SimulcastFilesSource) Start(ctx context.Context) error {
 				}
 
 				// If next quality level is above target bitrate move to next level
-			case len(s.qualityLevels) > (s.currentQualityLevel+1) && targetBitrate > s.qualityLevels[s.currentQualityLevel+1].bitrate:
+			case haveBetterQuality && targetBitrate > s.qualityLevels[s.currentQualityLevel+1].bitrate:
 				err = switchQualityLevel(s.currentQualityLevel + 1)
 				if err != nil {
 					return err
@@ -172,15 +190,15 @@ func (s *SimulcastFilesSource) Start(ctx context.Context) error {
 				frame, _, err = ivf.ParseNextFrame()
 			}
 
-			switch err {
+			switch {
 			// No error write the video frame
-			case nil:
+			case err == nil:
 				currentTimestamp = frameHeader.Timestamp
 				if err = s.WriteSample(media.Sample{Data: frame, Duration: time.Second}); err != nil {
 					return err
 				}
 			// If we have reached the end of the file start again
-			case io.EOF:
+			case errors.Is(err, io.EOF):
 				readerFile, err1 := setReaderFile(s.qualityLevels[s.currentQualityLevel].fileName)
 				if err1 != nil {
 					return err1
