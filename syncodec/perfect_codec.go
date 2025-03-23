@@ -9,6 +9,8 @@ import (
 
 var _ Codec = (*PerfectCodec)(nil)
 
+// PerfectCodec implements a simple codec that produces frames at a constant rate
+// with sizes exactly matching the target bitrate.
 type PerfectCodec struct {
 	writer FrameWriter
 
@@ -18,6 +20,7 @@ type PerfectCodec struct {
 	done chan struct{}
 }
 
+// NewPerfectCodec creates a new PerfectCodec with the specified frame writer and target bitrate.
 func NewPerfectCodec(writer FrameWriter, targetBitrateBps int) *PerfectCodec {
 	return &PerfectCodec{
 		writer:           writer,
@@ -37,6 +40,7 @@ func (c *PerfectCodec) SetTargetBitrate(r int) {
 	c.targetBitrateBps = r
 }
 
+// Start begins the codec operation, generating frames at the configured frame rate.
 func (c *PerfectCodec) Start() {
 	msToNextFrame := time.Duration((1.0/float64(c.fps))*1000.0) * time.Millisecond
 	ticker := time.NewTicker(msToNextFrame)
@@ -53,7 +57,9 @@ func (c *PerfectCodec) Start() {
 	}
 }
 
+// Close stops the codec and cleans up resources.
 func (c *PerfectCodec) Close() error {
 	close(c.done)
+
 	return nil
 }

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
 // SPDX-License-Identifier: MIT
 
+// Package sender implements WebRTC sender functionality for bandwidth estimation tests.
 package sender
 
 import (
@@ -20,12 +21,14 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// MediaSource represents a source of media samples that can be sent over WebRTC.
 type MediaSource interface {
 	SetTargetBitrate(int)
 	SetWriter(func(sample media.Sample) error)
 	Start(ctx context.Context) error
 }
 
+// Sender manages a WebRTC connection for sending media.
 type Sender struct {
 	settingEngine *webrtc.SettingEngine
 	mediaEngine   *webrtc.MediaEngine
@@ -44,6 +47,7 @@ type Sender struct {
 	log logging.LeveledLogger
 }
 
+// NewSender creates a new WebRTC sender with the given media source and options.
 func NewSender(source MediaSource, opts ...Option) (*Sender, error) {
 	sender := &Sender{
 		settingEngine:  &webrtc.SettingEngine{},
@@ -69,6 +73,7 @@ func NewSender(source MediaSource, opts ...Option) (*Sender, error) {
 	return sender, nil
 }
 
+// SetupPeerConnection initializes the WebRTC peer connection.
 func (s *Sender) SetupPeerConnection() error {
 	// Create a new RTCPeerConnection
 	peerConnection, err := webrtc.NewAPI(
@@ -82,7 +87,13 @@ func (s *Sender) SetupPeerConnection() error {
 	s.peerConnection = peerConnection
 
 	// Create a video track
-	videoTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8}, "video", "pion")
+	videoTrack, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{
+			MimeType: webrtc.MimeTypeVP8,
+		},
+		"video",
+		"pion",
+	)
 	if err != nil {
 		return err
 	}
@@ -108,22 +119,26 @@ func (s *Sender) SetupPeerConnection() error {
 	// Set the handler for ICE connection state
 	// This will notify you when the peer has connected/disconnected
 	s.peerConnection.OnICEConnectionStateChange(func(connectionState webrtc.ICEConnectionState) {
-		s.log.Infof("Sender Connection State has changed %s \n", connectionState.String())
+		s.log.Infof("Sender Connection State has changed %s", connectionState.String())
 	})
 	// Set the handler for Peer connection state
 	// This will notify you when the peer has connected/disconnected
 	s.peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		s.log.Infof("Sender Peer Connection State has changed: %s\n", state.String())
+		s.log.Infof("Sender Peer Connection State has changed: %s", state.String())
 	})
 	peerConnection.OnICECandidate(func(i *webrtc.ICECandidate) {
-		s.log.Infof("Sender candidate: %v\n", i)
+		s.log.Infof("Sender candidate: %v", i)
 	})
+
 	return nil
 }
 
+var errNoPeerConnection = fmt.Errorf("no PeerConnection created")
+
+// CreateOffer creates a WebRTC offer for signaling.
 func (s *Sender) CreateOffer() (*webrtc.SessionDescription, error) {
 	if s.peerConnection == nil {
-		return nil, fmt.Errorf("no PeerConnection created")
+		return nil, errNoPeerConnection
 	}
 	offer, err := s.peerConnection.CreateOffer(nil)
 	if err != nil {
@@ -139,16 +154,18 @@ func (s *Sender) CreateOffer() (*webrtc.SessionDescription, error) {
 	// we do this because we only can exchange one signaling message
 	// in a production application you should exchange ICE Candidates via OnICECandidate
 	<-gatherComplete
-	s.log.Infof("Sender gatherComplete: %v\n", s.peerConnection.ICEGatheringState())
+	s.log.Infof("Sender gatherComplete: %v", s.peerConnection.ICEGatheringState())
 
 	return s.peerConnection.LocalDescription(), nil
 }
 
+// AcceptAnswer processes a WebRTC answer from the remote peer.
 func (s *Sender) AcceptAnswer(answer *webrtc.SessionDescription) error {
 	// Sets the LocalDescription, and starts our UDP listeners
 	return s.peerConnection.SetRemoteDescription(*answer)
 }
 
+// Start begins the media sending process and runs until context is done.
 func (s *Sender) Start(ctx context.Context) error {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -171,14 +188,16 @@ func (s *Sender) Start(ctx context.Context) error {
 			case now := <-ticker.C:
 				targetBitrate := estimator.GetTargetBitrate()
 				if now.Sub(lastLog) >= time.Second {
-					s.log.Infof("targetBitrate = %v\n", targetBitrate)
+					s.log.Infof("targetBitrate = %v", targetBitrate)
 					lastLog = now
 				}
 				if lastBitrate != targetBitrate {
 					s.source.SetTargetBitrate(targetBitrate)
 					lastBitrate = targetBitrate
 				}
-				fmt.Fprintf(s.ccLogWriter, "%v, %v\n", now.UnixMilli(), targetBitrate)
+				if _, err := fmt.Fprintf(s.ccLogWriter, "%v, %v\n", now.UnixMilli(), targetBitrate); err != nil {
+					s.log.Errorf("failed to write to ccLogWriter: %v", err)
+				}
 			case <-ctx.Done():
 				return nil
 			}
@@ -189,10 +208,18 @@ func (s *Sender) Start(ctx context.Context) error {
 		return s.source.Start(ctx)
 	})
 
-	defer s.peerConnection.Close()
+	defer func() {
+		if err := s.peerConnection.Close(); err != nil {
+			s.log.Errorf("failed to close peer connection: %v", err)
+		}
+	}()
+
 	return wg.Wait()
 }
 
+var errSignalingFailed = fmt.Errorf("signaling failed")
+
+// SignalHTTP performs WebRTC signaling over HTTP.
 func (s *Sender) SignalHTTP(addr, route string) error {
 	offer, err := s.CreateOffer()
 	if err != nil {
@@ -203,17 +230,23 @@ func (s *Sender) SignalHTTP(addr, route string) error {
 		return err
 	}
 	url := fmt.Sprintf("http://%s/%s", addr, route)
-	s.log.Infof("connecting to '%v'\n", url)
+	s.log.Infof("connecting to '%v'", url)
+	//nolint:gosec,noctx
 	resp, err := http.Post(url, "application/json; charset=utf-8", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if err = resp.Body.Close(); err != nil {
+			s.log.Errorf("failed to close signal http body: %v", err)
+		}
+	}()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("signaling received unexpected status code: %v: %v", resp.StatusCode, resp.Status)
+		return fmt.Errorf("%w: unexpected status code: %v: %v", errSignalingFailed, resp.StatusCode, resp.Status)
 	}
 	answer := webrtc.SessionDescription{}
 	if sdpErr := json.NewDecoder(resp.Body).Decode(&answer); sdpErr != nil {
-		panic(sdpErr)
+		return fmt.Errorf("decode SDP answer: %w", sdpErr)
 	}
 
 	return s.AcceptAnswer(&answer)

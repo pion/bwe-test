@@ -1,70 +1,37 @@
 // SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
 // SPDX-License-Identifier: MIT
 
+// Package logging provides utilities for logging in bandwidth estimation tests.
 package logging
 
 import (
 	"fmt"
 	"time"
 
+	"github.com/pion/bwe-test/internal/sequencenumber"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 )
 
-const (
-	maxSequenceNumberPlusOne = int64(65536)
-	breakpoint               = 32768 // half of max uint16
-)
-
-type unwrapper struct {
-	init          bool
-	lastUnwrapped int64
-}
-
-func isNewer(value, previous uint16) bool {
-	if value-previous == breakpoint {
-		return value > previous
-	}
-	return value != previous && (value-previous) < breakpoint
-}
-
-func (u *unwrapper) unwrap(i uint16) int64 {
-	if !u.init {
-		u.init = true
-		u.lastUnwrapped = int64(i)
-		return u.lastUnwrapped
-	}
-
-	lastWrapped := uint16(u.lastUnwrapped)
-	delta := int64(i - lastWrapped)
-	if isNewer(i, lastWrapped) {
-		if delta < 0 {
-			delta += maxSequenceNumberPlusOne
-		}
-	} else if delta > 0 && u.lastUnwrapped+delta-maxSequenceNumberPlusOne >= 0 {
-		delta -= maxSequenceNumberPlusOne
-	}
-
-	u.lastUnwrapped += int64(delta)
-	return u.lastUnwrapped
-}
-
+// RTPFormatter formats RTP packets for logging.
 type RTPFormatter struct {
-	seqnr unwrapper
+	seqnr sequencenumber.Unwrapper
 }
 
+// RTPFormat formats an RTP packet as a string for logging.
 func (f *RTPFormatter) RTPFormat(pkt *rtp.Packet, _ interceptor.Attributes) string {
 	var twcc rtp.TransportCCExtension
-	unwrappedSeqNr := f.seqnr.unwrap(pkt.SequenceNumber)
+	unwrappedSeqNr := f.seqnr.Unwrap(pkt.SequenceNumber)
 	var twccNr uint16
 	if len(pkt.GetExtensionIDs()) > 0 {
 		ext := pkt.GetExtension(pkt.GetExtensionIDs()[0])
 		if err := twcc.Unmarshal(ext); err != nil {
-			panic(err)
+			return fmt.Sprintf("Error unmarshaling TWCC extension: %v", err)
 		}
 		twccNr = twcc.TransportSequence
 	}
+
 	return fmt.Sprintf("%v, %v, %v, %v, %v, %v, %v, %v, %v\n",
 		time.Now().UnixMilli(),
 		pkt.PayloadType,
@@ -78,6 +45,7 @@ func (f *RTPFormatter) RTPFormat(pkt *rtp.Packet, _ interceptor.Attributes) stri
 	)
 }
 
+// RTCPFormat formats RTCP packets as a string for logging.
 func RTCPFormat(pkts []rtcp.Packet, _ interceptor.Attributes) string {
 	now := time.Now().UnixMilli()
 	size := 0
@@ -86,8 +54,9 @@ func RTCPFormat(pkts []rtcp.Packet, _ interceptor.Attributes) string {
 		case *rtcp.TransportLayerCC:
 			size += int(feedback.Len())
 		case *rtcp.RawPacket:
-			size += int(len(*feedback))
+			size += len(*feedback)
 		}
 	}
+
 	return fmt.Sprintf("%v, %v\n", now, size)
 }

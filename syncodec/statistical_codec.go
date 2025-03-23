@@ -10,10 +10,7 @@ import (
 	"time"
 )
 
-func init() {
-	rand.Seed(time.Now().UnixNano())
-}
-
+// Constants for the statistical codec.
 const (
 	defaultTargetBitrateBps = 1_000_000 // 1 Mbps
 	defaultFPS              = 30
@@ -23,38 +20,45 @@ const (
 	defaultT0               = 33 * time.Millisecond
 	defaultB0               = 4_170 // 4.17 KB
 
-	// scaling parameter of zero-mean laplacian distribution describing
-	// deviations in normalized frame interval
+	// Scaling parameter of zero-mean laplacian distribution describing
+	// deviations in normalized frame interval.
 	defaultScaleT = 0.15
 
-	// scaling parameter of zero-mean laplacian distribution describing
-	// deviations in normalized frame size
+	// Scaling parameter of zero-mean laplacian distribution describing
+	// deviations in normalized frame size.
 	defaultScaleB = 0.15
 
 	defaultRMin = 150_000     // 150 kbps
 	defaultRMax = 150_000_000 // 150 Mbps
 )
 
+// noiser defines an interface for adding noise to values.
 type noiser interface {
 	noise() float64
 }
 
+// laplaceNoise implements the noiser interface using a Laplace distribution.
 type laplaceNoise struct {
 	rnd   *rand.Rand
 	scale float64
 }
 
+// noise returns a random value from a Laplace distribution.
 func (l laplaceNoise) noise() float64 {
 	if l.rnd == nil {
+		//nolint:gosec
 		l.rnd = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
 	e1 := -l.scale * math.Log(l.rnd.Float64())
 	e2 := -l.scale * math.Log(l.rnd.Float64())
+
 	return e1 - e2
 }
 
 var _ Codec = (*StatisticalCodec)(nil)
 
+// StatisticalCodec implements a codec that produces frames with sizes and timings
+// that follow statistical distributions to simulate real-world codecs.
 type StatisticalCodec struct {
 	// requested target bitrate
 	targetBitrateBps int
@@ -77,10 +81,10 @@ type StatisticalCodec struct {
 	// reference frame size targetBitrateBps / fps
 	b0 int
 
-	// max rate supported by video encoder
+	// min rate supported by video encoder
 	rMin int
 
-	// min rate supported by video encoder
+	// max rate supported by video encoder
 	rMax int
 
 	// output writer
@@ -95,7 +99,6 @@ type StatisticalCodec struct {
 	scaleT float64
 
 	// internal types
-
 	targetBitrateLock       sync.Mutex
 	targetBitrateChan       chan int
 	lastTargetBitrateUpdate time.Time
@@ -108,50 +111,64 @@ type StatisticalCodec struct {
 	done chan struct{}
 }
 
+// StatisticalCodecOption is a function that configures a StatisticalCodec.
 type StatisticalCodecOption func(*StatisticalCodec) error
 
+// WithInitialTargetBitrate sets the initial target bitrate for the codec.
 func WithInitialTargetBitrate(targetBitrateBps int) StatisticalCodecOption {
 	return func(sc *StatisticalCodec) error {
 		sc.targetBitrateBps = targetBitrateBps
+
 		return nil
 	}
 }
 
+// WithFramesPerSecond sets the frames per second for the codec.
 func WithFramesPerSecond(fps int) StatisticalCodecOption {
 	return func(sc *StatisticalCodec) error {
 		sc.fps = fps
+
 		return nil
 	}
 }
 
+// WithScaleB sets the scaling parameter for frame size noise.
 func WithScaleB(scale float64) StatisticalCodecOption {
 	return func(sc *StatisticalCodec) error {
 		sc.scaleB = scale
+
 		return nil
 	}
 }
 
+// WithScaleT sets the scaling parameter for frame timing noise.
 func WithScaleT(scale float64) StatisticalCodecOption {
 	return func(sc *StatisticalCodec) error {
 		sc.scaleT = scale
+
 		return nil
 	}
 }
 
-func min(a, b int) int {
+// minimum returns the minimum of two integers.
+func minimum(a, b int) int {
 	if a < b {
 		return a
 	}
+
 	return b
 }
 
-func max(a, b int) int {
+// maximum returns the maximum of two integers.
+func maximum(a, b int) int {
 	if a > b {
 		return a
 	}
+
 	return b
 }
 
+// NewStatisticalEncoder creates a new StatisticalCodec with the given frame writer and options.
 func NewStatisticalEncoder(w FrameWriter, opts ...StatisticalCodecOption) (*StatisticalCodec, error) {
 	sc := &StatisticalCodec{
 		targetBitrateBps:        defaultTargetBitrateBps,
@@ -182,10 +199,12 @@ func NewStatisticalEncoder(w FrameWriter, opts ...StatisticalCodecOption) (*Stat
 	}
 
 	sc.frameSizeNoiser = laplaceNoise{
+		//nolint:gosec
 		rnd:   rand.New(rand.NewSource(time.Now().UnixNano())),
 		scale: sc.scaleB,
 	}
 	sc.frameDurationNoiser = laplaceNoise{
+		//nolint:gosec
 		rnd:   rand.New(rand.NewSource(time.Now().UnixNano())),
 		scale: sc.scaleT,
 	}
@@ -207,13 +226,14 @@ func (c *StatisticalCodec) GetTargetBitrate() int {
 // c.rMin, bitrate will be set to c.rMin.
 func (c *StatisticalCodec) SetTargetBitrate(r int) {
 	if r < c.targetBitrateBps {
-		c.targetBitrateBps = max(r, c.rMin)
+		c.targetBitrateBps = maximum(r, c.rMin)
+
 		return
 	}
-	c.targetBitrateBps = min(r, c.rMax)
+	c.targetBitrateBps = minimum(r, c.rMax)
 }
 
-// NextFrame returns the next faked video frame
+// nextFrame returns the next faked video frame.
 func (c *StatisticalCodec) nextFrame() Frame {
 	duration := time.Duration((1.0/float64(c.fps))*1000.0) * time.Millisecond
 
@@ -244,7 +264,7 @@ func (c *StatisticalCodec) nextFrame() Frame {
 	}
 }
 
-// Start starts the StatisticalCodec
+// Start starts the StatisticalCodec.
 func (c *StatisticalCodec) Start() {
 	timer := time.NewTimer(c.t0)
 	for {
@@ -270,8 +290,9 @@ func (c *StatisticalCodec) Start() {
 	}
 }
 
-// Close stops and closes the StatisticalCodec
+// Close stops and closes the StatisticalCodec.
 func (c *StatisticalCodec) Close() error {
 	close(c.done)
+
 	return nil
 }
