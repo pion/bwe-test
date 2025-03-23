@@ -1,6 +1,8 @@
 module github.com/pion/bwe-test
 
-go 1.20
+go 1.23.0
+
+toolchain go1.24.1
 
 require (
 	github.com/gorilla/websocket v1.5.3
@@ -10,7 +12,7 @@ require (
 	github.com/pion/rtp v1.8.13
 	github.com/pion/transport/v3 v3.0.7
 	github.com/pion/webrtc/v4 v4.0.14
-	golang.org/x/sync v0.11.0
+	golang.org/x/sync v0.12.0
 )
 
 require (
