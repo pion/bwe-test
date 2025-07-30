@@ -20,11 +20,12 @@ func Logger(l logging.LeveledLogger) Option {
 }
 
 type SendSideController struct {
-	log  logging.LeveledLogger
-	dre  *deliveryRateEstimator
-	lbc  *LossRateController
-	drc  *DelayRateController
-	rate int
+	log          logging.LeveledLogger
+	dre          *deliveryRateEstimator
+	lbc          *LossRateController
+	drc          *DelayRateController
+	rate         int
+	highestAcked uint64
 }
 
 func NewSendSideController(initialRate, minRate, maxRate int, opts ...Option) (*SendSideController, error) {
@@ -49,7 +50,13 @@ func (c *SendSideController) OnAcks(arrival time.Time, rtt time.Duration, acks [
 	}
 
 	for _, ack := range acks {
+		if ack.SeqNr < c.highestAcked {
+			continue
+		}
 		if ack.Arrived {
+			if ack.SeqNr > c.highestAcked {
+				c.highestAcked = ack.SeqNr
+			}
 			c.lbc.OnPacketAcked()
 			if !ack.Arrival.IsZero() {
 				c.dre.OnPacketAcked(ack.Arrival, int(ack.Size))
