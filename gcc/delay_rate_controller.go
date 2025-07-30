@@ -20,9 +20,9 @@ type DelayRateController struct {
 	samples     int
 }
 
-func NewDelayRateController(initialRate int) *DelayRateController {
+func NewDelayRateController(initialRate int, logger logging.LeveledLogger) *DelayRateController {
 	return &DelayRateController{
-		log:         logging.NewDefaultLoggerFactory().NewLogger("bwe_delay_rate_controller"),
+		log:         logger,
 		aga:         newArrivalGroupAccumulator(),
 		last:        []Acknowledgment{},
 		kf:          newKalmanFilter(),
