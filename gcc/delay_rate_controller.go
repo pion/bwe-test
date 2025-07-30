@@ -9,8 +9,6 @@ import (
 	"github.com/pion/logging"
 )
 
-const maxSamples = 1000
-
 type DelayRateController struct {
 	log         logging.LeveledLogger
 	aga         *arrivalGroupAccumulator
