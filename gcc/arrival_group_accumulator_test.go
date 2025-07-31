@@ -46,7 +46,8 @@ func TestArrivalGroupAccumulator(t *testing.T) {
 			name: "createsTwoElementGroup",
 			log: []Acknowledgment{
 				{
-					Arrival: time.Time{}.Add(15 * time.Millisecond),
+					Departure: time.Time{},
+					Arrival:   time.Time{}.Add(15 * time.Millisecond),
 				},
 				{
 					Departure: time.Time{}.Add(3 * time.Millisecond),
@@ -85,7 +86,8 @@ func TestArrivalGroupAccumulator(t *testing.T) {
 			exp: []arrivalGroup{
 				{
 					{
-						Arrival: time.Time{}.Add(15 * time.Millisecond),
+						Departure: time.Time{},
+						Arrival:   time.Time{}.Add(15 * time.Millisecond),
 					},
 					{
 						Departure: time.Time{}.Add(3 * time.Millisecond),
@@ -120,7 +122,8 @@ func TestArrivalGroupAccumulator(t *testing.T) {
 			exp: []arrivalGroup{
 				{
 					{
-						Arrival: time.Time{}.Add(15 * time.Millisecond),
+						Departure: time.Time{},
+						Arrival:   time.Time{}.Add(15 * time.Millisecond),
 					},
 					{
 						Departure: time.Time{}.Add(3 * time.Millisecond),
