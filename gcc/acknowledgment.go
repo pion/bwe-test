@@ -28,7 +28,7 @@ const (
 )
 
 type Acknowledgment struct {
-	SeqNr     int64
+	SeqNr     uint64
 	Size      uint16
 	Departure time.Time
 	Arrived   bool
