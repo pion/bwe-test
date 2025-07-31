@@ -29,12 +29,12 @@ func (a *arrivalGroupAccumulator) onPacketAcked(ack Acknowledgment) arrivalGroup
 		return nil
 	}
 
-	if ack.Departure.Sub(a.next[0].Departure) < a.burstInterval {
+	sendTimeDelta := ack.Departure.Sub(a.next[0].Departure)
+	if sendTimeDelta < a.burstInterval {
 		a.next = append(a.next, ack)
 		return nil
 	}
 
-	sendTimeDelta := ack.Departure.Sub(a.next[0].Departure)
 	arrivalTimeDeltaLast := ack.Arrival.Sub(a.next[len(a.next)-1].Arrival)
 	arrivalTimeDeltaFirst := ack.Arrival.Sub(a.next[0].Arrival)
 	propagationDelta := arrivalTimeDeltaFirst - sendTimeDelta
