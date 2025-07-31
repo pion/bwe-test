@@ -44,7 +44,8 @@ func (d *overuseDetector) update(ts time.Time, trend float64, numDeltas int) usa
 	}
 	modifiedTrend := float64(min(numDeltas, maxNumDeltas)) * trend
 
-	if modifiedTrend > d.delayThreshold {
+	switch {
+	case modifiedTrend > d.delayThreshold:
 		if d.firstOverUse.IsZero() {
 			d.firstOverUse = ts
 		}
@@ -52,16 +53,17 @@ func (d *overuseDetector) update(ts time.Time, trend float64, numDeltas int) usa
 			d.firstOverUse = time.Time{}
 			d.lastUsage = usageOver
 		}
-	} else if modifiedTrend < -d.delayThreshold {
+	case modifiedTrend < -d.delayThreshold:
 		d.firstOverUse = time.Time{}
 		d.lastUsage = usageUnder
-	} else {
+	default:
 		d.firstOverUse = time.Time{}
 		d.lastUsage = usageNormal
 	}
 	if d.adaptiveThreshold {
 		d.adaptThreshold(ts, modifiedTrend)
 	}
+
 	return d.lastUsage
 }
 
@@ -71,16 +73,14 @@ func (d *overuseDetector) adaptThreshold(ts time.Time, modifiedTrend float64) {
 	}
 	if math.Abs(modifiedTrend) > d.delayThreshold+15 {
 		d.lastUpdate = ts
+
 		return
 	}
 	k := kU
 	if math.Abs(modifiedTrend) < d.delayThreshold {
 		k = kD
 	}
-	delta := ts.Sub(d.lastUpdate)
-	if delta > 100*time.Millisecond {
-		delta = 100 * time.Millisecond
-	}
+	delta := min(ts.Sub(d.lastUpdate), 100*time.Millisecond)
 	d.delayThreshold += k * (math.Abs(modifiedTrend) - d.delayThreshold) * float64(delta.Milliseconds())
 	d.delayThreshold = max(min(d.delayThreshold, 600.0), 6.0)
 	d.lastUpdate = ts

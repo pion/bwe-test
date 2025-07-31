@@ -9,16 +9,20 @@ import (
 	"github.com/pion/logging"
 )
 
+// Option is a functional option for a SendSideController.
 type Option func(*SendSideController) error
 
+// Logger configures a custom logger for a SendSideController.
 func Logger(l logging.LeveledLogger) Option {
 	return func(ssc *SendSideController) error {
 		ssc.log = l
 		ssc.drc.log = l
+
 		return nil
 	}
 }
 
+// SendSideController is a sender side congestion controller.
 type SendSideController struct {
 	log          logging.LeveledLogger
 	dre          *deliveryRateEstimator
@@ -28,6 +32,8 @@ type SendSideController struct {
 	highestAcked uint64
 }
 
+// NewSendSideController creates a new SendSideController with initial, min and
+// max rates.
 func NewSendSideController(initialRate, minRate, maxRate int, opts ...Option) (*SendSideController, error) {
 	ssc := &SendSideController{
 		log:  logging.NewDefaultLoggerFactory().NewLogger("bwe_send_side_controller"),
@@ -41,9 +47,13 @@ func NewSendSideController(initialRate, minRate, maxRate int, opts ...Option) (*
 			return nil, err
 		}
 	}
+
 	return ssc, nil
 }
 
+// OnAcks must be called when new acknowledgments arrive. arrival is the arrival
+// time of the feedback, RTT is the last measured RTT and acks is a list of
+// Acknowledgments contained in the latest feedback.
 func (c *SendSideController) OnAcks(arrival time.Time, rtt time.Duration, acks []Acknowledgment) int {
 	if len(acks) == 0 {
 		return c.rate
@@ -71,6 +81,14 @@ func (c *SendSideController) OnAcks(arrival time.Time, rtt time.Duration, acks [
 	lossTarget := c.lbc.update(delivered)
 	delayTarget := c.drc.update(arrival, delivered, rtt)
 	c.rate = min(lossTarget, delayTarget)
-	c.log.Tracef("rtt=%v, delivered=%v, lossTarget=%v, delayTarget=%v, target=%v", rtt.Nanoseconds(), delivered, lossTarget, delayTarget, c.rate)
+	c.log.Tracef(
+		"rtt=%v, delivered=%v, lossTarget=%v, delayTarget=%v, target=%v",
+		rtt.Nanoseconds(),
+		delivered,
+		lossTarget,
+		delayTarget,
+		c.rate,
+	)
+
 	return c.rate
 }

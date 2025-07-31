@@ -26,12 +26,14 @@ func newArrivalGroupAccumulator() *arrivalGroupAccumulator {
 func (a *arrivalGroupAccumulator) onPacketAcked(ack Acknowledgment) arrivalGroup {
 	if len(a.next) == 0 {
 		a.next = append(a.next, ack)
+
 		return nil
 	}
 
 	sendTimeDelta := ack.Departure.Sub(a.next[0].Departure)
 	if sendTimeDelta < a.burstInterval {
 		a.next = append(a.next, ack)
+
 		return nil
 	}
 
@@ -41,11 +43,13 @@ func (a *arrivalGroupAccumulator) onPacketAcked(ack Acknowledgment) arrivalGroup
 
 	if propagationDelta < 0 && arrivalTimeDeltaLast <= a.burstInterval && arrivalTimeDeltaFirst < a.maxBurstDuration {
 		a.next = append(a.next, ack)
+
 		return nil
 	}
 
 	group := make(arrivalGroup, len(a.next))
 	copy(group, a.next)
 	a.next = arrivalGroup{ack}
+
 	return group
 }

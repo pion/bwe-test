@@ -126,8 +126,8 @@ func TestOveruseDetectorUpdate(t *testing.T) {
 			od := newOveruseDetector(tc.adaptive)
 			received := []usage{}
 			for _, e := range tc.values {
-				usage := od.update(e.ts, e.estimate, e.numDeltas)
-				received = append(received, usage)
+				u := od.update(e.ts, e.estimate, e.numDeltas)
+				received = append(received, u)
 			}
 			assert.Equal(t, tc.expected, received)
 		})

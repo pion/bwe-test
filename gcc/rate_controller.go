@@ -62,6 +62,7 @@ func (c *rateController) canIncreaseMultiplicatively(deliveredRate float64) bool
 	stdDev := math.Sqrt(c.lastDecrease.variance)
 	lower := c.lastDecrease.average - 3*stdDev
 	upper := c.lastDecrease.average + 3*stdDev
+
 	return deliveredRate < lower || deliveredRate > upper
 }
 
@@ -69,11 +70,13 @@ func (c *rateController) multiplicativeIncrease(rate float64, window time.Durati
 	exponent := min(window.Seconds(), 1.0)
 	eta := math.Pow(1.08, exponent)
 	target := eta * rate
+
 	return target
 }
 
 func (c *rateController) additiveIncrease(rate float64, expectedPacketSizeBits int, window time.Duration) float64 {
 	alpha := 0.5 * min(window.Seconds(), 1.0)
 	target := rate + max(1000, alpha*float64(expectedPacketSizeBits))
+
 	return target
 }

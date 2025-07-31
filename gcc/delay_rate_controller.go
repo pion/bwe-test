@@ -44,6 +44,7 @@ func (c *delayRateController) onPacketAcked(ack Acknowledgment) {
 	}
 	if len(c.last) == 0 {
 		c.last = next
+
 		return
 	}
 
@@ -59,7 +60,7 @@ func (c *delayRateController) onPacketAcked(ack Acknowledgment) {
 	c.latestUsage = c.od.update(ack.Arrival, estimate, c.samples)
 	c.last = next
 	c.log.Tracef(
-		"ts=%v.%06d, seq=%v, size=%v, interArrivalTime=%v, interDepartureTime=%v, interGroupDelay=%v, estimate=%v, threshold=%v, usage=%v, state=%v",
+		"ts=%v.%06d, seq=%v, size=%v, interArrivalTime=%v, interDepartureTime=%v, interGroupDelay=%v, estimate=%v, threshold=%v, usage=%v, state=%v", // nolint
 		c.last[0].Departure.UTC().Format("2006/01/02 15:04:05"),
 		c.last[0].Departure.UTC().Nanosecond()/1e3,
 		next[0].SeqNr,
@@ -83,5 +84,6 @@ func groupSize(group arrivalGroup) int {
 	for _, ack := range group {
 		sum += int(ack.Size)
 	}
+
 	return sum
 }

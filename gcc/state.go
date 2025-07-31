@@ -16,35 +16,52 @@ const (
 func (s state) transition(u usage) state {
 	switch s {
 	case stateHold:
-		switch u {
-		case usageOver:
-			return stateDecrease
-		case usageNormal:
-			return stateIncrease
-		case usageUnder:
-			return stateHold
-		}
-
+		return transitionFromHold(u)
 	case stateIncrease:
-		switch u {
-		case usageOver:
-			return stateDecrease
-		case usageNormal:
-			return stateIncrease
-		case usageUnder:
-			return stateHold
-		}
-
+		return transitionFromIncrease(u)
 	case stateDecrease:
-		switch u {
-		case usageOver:
-			return stateDecrease
-		case usageNormal:
-			return stateHold
-		case usageUnder:
-			return stateHold
-		}
+		return transitionFromDecrease(u)
 	}
+
+	return stateIncrease
+}
+
+func transitionFromHold(u usage) state {
+	switch u {
+	case usageOver:
+		return stateDecrease
+	case usageNormal:
+		return stateIncrease
+	case usageUnder:
+		return stateHold
+	}
+
+	return stateIncrease
+}
+
+func transitionFromIncrease(u usage) state {
+	switch u {
+	case usageOver:
+		return stateDecrease
+	case usageNormal:
+		return stateIncrease
+	case usageUnder:
+		return stateHold
+	}
+
+	return stateIncrease
+}
+
+func transitionFromDecrease(u usage) state {
+	switch u {
+	case usageOver:
+		return stateDecrease
+	case usageNormal:
+		return stateHold
+	case usageUnder:
+		return stateHold
+	}
+
 	return stateIncrease
 }
 

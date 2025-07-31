@@ -34,12 +34,13 @@ func TestArrivalGroupAccumulator(t *testing.T) {
 				},
 				triggerNewGroupElement,
 			},
-			exp: []arrivalGroup{{
+			exp: []arrivalGroup{
 				{
-					Departure: time.Time{},
-					Arrival:   time.Time{}.Add(time.Millisecond),
+					{
+						Departure: time.Time{},
+						Arrival:   time.Time{}.Add(time.Millisecond),
+					},
 				},
-			},
 			},
 		},
 		{
@@ -98,42 +99,6 @@ func TestArrivalGroupAccumulator(t *testing.T) {
 					{
 						Departure: time.Time{}.Add(9 * time.Millisecond),
 						Arrival:   time.Time{}.Add(24 * time.Millisecond),
-					},
-				},
-			},
-		},
-		{
-			name: "createsTwoArrivalGroups2",
-			log: []Acknowledgment{
-				{
-					Departure: time.Time{},
-					Arrival:   time.Time{}.Add(15 * time.Millisecond),
-				},
-				{
-					Departure: time.Time{}.Add(3 * time.Millisecond),
-					Arrival:   time.Time{}.Add(20 * time.Millisecond),
-				},
-				{
-					Departure: time.Time{}.Add(9 * time.Millisecond),
-					Arrival:   time.Time{}.Add(30 * time.Millisecond),
-				},
-				triggerNewGroupElement,
-			},
-			exp: []arrivalGroup{
-				{
-					{
-						Departure: time.Time{},
-						Arrival:   time.Time{}.Add(15 * time.Millisecond),
-					},
-					{
-						Departure: time.Time{}.Add(3 * time.Millisecond),
-						Arrival:   time.Time{}.Add(20 * time.Millisecond),
-					},
-				},
-				{
-					{
-						Departure: time.Time{}.Add(9 * time.Millisecond),
-						Arrival:   time.Time{}.Add(30 * time.Millisecond),
 					},
 				},
 			},

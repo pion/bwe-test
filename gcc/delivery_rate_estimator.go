@@ -31,11 +31,13 @@ func (d *deliveryRateHeap) Pop() any {
 	n := len(old)
 	x := old[n-1]
 	*d = old[0 : n-1]
+
 	return x
 }
 
 // Push implements heap.Interface.
 func (d *deliveryRateHeap) Push(x any) {
+	// nolint
 	*d = append(*d, x.(deliveryRateHeapItem))
 }
 
@@ -86,5 +88,6 @@ func (e *deliveryRateEstimator) getRate() int {
 		return 0
 	}
 	rate := 8 * float64(sum) / d.Seconds()
+
 	return int(rate)
 }

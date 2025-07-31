@@ -8,25 +8,28 @@ import (
 	"time"
 )
 
+// ECN represents the ECN bits of an IP packet header.
 type ECN uint8
 
 const (
-	//nolint:misspell
-	// ECNNonECT signals Non ECN-Capable Transport, Non-ECT
+	// ECNNonECT signals Non ECN-Capable Transport, Non-ECT.
+	// nolint:misspell
 	ECNNonECT ECN = iota // 00
 
-	//nolint:misspell
-	// ECNECT1 signals ECN Capable Transport, ECT(0)
+	// ECNECT1 signals ECN Capable Transport, ECT(0).
+	// nolint:misspell
 	ECNECT1 // 01
 
-	//nolint:misspell
-	// ECNECT0 signals ECN Capable Transport, ECT(1)
+	// ECNECT0 signals ECN Capable Transport, ECT(1).
+	// nolint:misspell
 	ECNECT0 // 10
 
-	// ECNCE signals ECN Congestion Encountered, CE
+	// ECNCE signals ECN Congestion Encountered, CE.
+	// nolint:misspell
 	ECNCE // 11
 )
 
+// An Acknowledgment stores send and receive information about a packet.
 type Acknowledgment struct {
 	SeqNr     uint64
 	Size      uint16
