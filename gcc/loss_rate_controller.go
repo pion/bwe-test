@@ -3,7 +3,7 @@
 
 package gcc
 
-type LossRateController struct {
+type lossRateController struct {
 	bitrate  int
 	min, max float64
 
@@ -12,8 +12,8 @@ type LossRateController struct {
 	lostSinceLastUpdate    int
 }
 
-func NewLossRateController(initialRate, minRate, maxRate int) *LossRateController {
-	return &LossRateController{
+func newLossRateController(initialRate, minRate, maxRate int) *lossRateController {
+	return &lossRateController{
 		bitrate:                initialRate,
 		min:                    float64(minRate),
 		max:                    float64(maxRate),
@@ -23,17 +23,17 @@ func NewLossRateController(initialRate, minRate, maxRate int) *LossRateControlle
 	}
 }
 
-func (l *LossRateController) OnPacketAcked() {
+func (l *lossRateController) onPacketAcked() {
 	l.packetsSinceLastUpdate++
 	l.arrivedSinceLastUpdate++
 }
 
-func (l *LossRateController) OnPacketLost() {
+func (l *lossRateController) onPacketLost() {
 	l.packetsSinceLastUpdate++
 	l.lostSinceLastUpdate++
 }
 
-func (l *LossRateController) Update(lastDeliveryRate int) int {
+func (l *lossRateController) update(lastDeliveryRate int) int {
 	lossRate := float64(l.lostSinceLastUpdate) / float64(l.packetsSinceLastUpdate)
 	var target float64
 	if lossRate > 0.1 {

@@ -76,14 +76,14 @@ func TestLossRateController(t *testing.T) {
 	}
 	for i, tc := range cases {
 		t.Run(fmt.Sprintf("%v", i), func(t *testing.T) {
-			lrc := NewLossRateController(tc.init, tc.min, tc.max)
+			lrc := newLossRateController(tc.init, tc.min, tc.max)
 			for i := 0; i < tc.acked; i++ {
-				lrc.OnPacketAcked()
+				lrc.onPacketAcked()
 			}
 			for i := 0; i < tc.lost; i++ {
-				lrc.OnPacketLost()
+				lrc.onPacketLost()
 			}
-			assert.Equal(t, tc.expectedRate, lrc.Update(tc.deliveredRate))
+			assert.Equal(t, tc.expectedRate, lrc.update(tc.deliveredRate))
 		})
 	}
 }

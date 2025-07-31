@@ -69,9 +69,9 @@ func TestDeliveryRateEstimator(t *testing.T) {
 		t.Run(fmt.Sprintf("%v", i), func(t *testing.T) {
 			e := newDeliveryRateEstimator(tc.window)
 			for _, ack := range tc.acks {
-				e.OnPacketAcked(ack.arrival, ack.size)
+				e.onPacketAcked(ack.arrival, ack.size)
 			}
-			assert.Equal(t, tc.expectedRate, e.GetRate())
+			assert.Equal(t, tc.expectedRate, e.getRate())
 		})
 	}
 }

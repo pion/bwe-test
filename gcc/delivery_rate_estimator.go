@@ -58,7 +58,7 @@ func newDeliveryRateEstimator(window time.Duration) *deliveryRateEstimator {
 	}
 }
 
-func (e *deliveryRateEstimator) OnPacketAcked(arrival time.Time, size int) {
+func (e *deliveryRateEstimator) onPacketAcked(arrival time.Time, size int) {
 	if arrival.After(e.latestArrival) {
 		e.latestArrival = arrival
 	}
@@ -68,7 +68,7 @@ func (e *deliveryRateEstimator) OnPacketAcked(arrival time.Time, size int) {
 	})
 }
 
-func (e *deliveryRateEstimator) GetRate() int {
+func (e *deliveryRateEstimator) getRate() int {
 	deadline := e.latestArrival.Add(-e.window)
 	for len(*e.history) > 0 && (*e.history)[0].arrival.Before(deadline) {
 		heap.Pop(e.history)

@@ -9,7 +9,7 @@ import (
 	"github.com/pion/logging"
 )
 
-type DelayRateController struct {
+type delayRateController struct {
 	log         logging.LeveledLogger
 	aga         *arrivalGroupAccumulator
 	last        arrivalGroup
@@ -20,8 +20,8 @@ type DelayRateController struct {
 	samples     int
 }
 
-func NewDelayRateController(initialRate int, logger logging.LeveledLogger) *DelayRateController {
-	return &DelayRateController{
+func newDelayRateController(initialRate int, logger logging.LeveledLogger) *delayRateController {
+	return &delayRateController{
 		log:         logger,
 		aga:         newArrivalGroupAccumulator(),
 		last:        []Acknowledgment{},
@@ -33,7 +33,7 @@ func NewDelayRateController(initialRate int, logger logging.LeveledLogger) *Dela
 	}
 }
 
-func (c *DelayRateController) OnPacketAcked(ack Acknowledgment) {
+func (c *delayRateController) onPacketAcked(ack Acknowledgment) {
 	next := c.aga.onPacketAcked(ack)
 	if next == nil {
 		return
@@ -74,7 +74,7 @@ func (c *DelayRateController) OnPacketAcked(ack Acknowledgment) {
 	)
 }
 
-func (c *DelayRateController) Update(ts time.Time, lastDeliveryRate int, rtt time.Duration) int {
+func (c *delayRateController) update(ts time.Time, lastDeliveryRate int, rtt time.Duration) int {
 	return c.rc.update(ts, c.latestUsage, lastDeliveryRate, rtt)
 }
 

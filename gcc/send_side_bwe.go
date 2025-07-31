@@ -22,8 +22,8 @@ func Logger(l logging.LeveledLogger) Option {
 type SendSideController struct {
 	log          logging.LeveledLogger
 	dre          *deliveryRateEstimator
-	lbc          *LossRateController
-	drc          *DelayRateController
+	lbc          *lossRateController
+	drc          *delayRateController
 	rate         int
 	highestAcked uint64
 }
@@ -32,8 +32,8 @@ func NewSendSideController(initialRate, minRate, maxRate int, opts ...Option) (*
 	ssc := &SendSideController{
 		log:  logging.NewDefaultLoggerFactory().NewLogger("bwe_send_side_controller"),
 		dre:  newDeliveryRateEstimator(time.Second),
-		lbc:  NewLossRateController(initialRate, minRate, maxRate),
-		drc:  NewDelayRateController(initialRate, logging.NewDefaultLoggerFactory().NewLogger("bwe_delay_rate_controller")),
+		lbc:  newLossRateController(initialRate, minRate, maxRate),
+		drc:  newDelayRateController(initialRate, logging.NewDefaultLoggerFactory().NewLogger("bwe_delay_rate_controller")),
 		rate: initialRate,
 	}
 	for _, opt := range opts {
@@ -57,19 +57,19 @@ func (c *SendSideController) OnAcks(arrival time.Time, rtt time.Duration, acks [
 			if ack.SeqNr > c.highestAcked {
 				c.highestAcked = ack.SeqNr
 			}
-			c.lbc.OnPacketAcked()
+			c.lbc.onPacketAcked()
 			if !ack.Arrival.IsZero() {
-				c.dre.OnPacketAcked(ack.Arrival, int(ack.Size))
-				c.drc.OnPacketAcked(ack)
+				c.dre.onPacketAcked(ack.Arrival, int(ack.Size))
+				c.drc.onPacketAcked(ack)
 			}
 		} else {
-			c.lbc.OnPacketLost()
+			c.lbc.onPacketLost()
 		}
 	}
 
-	delivered := c.dre.GetRate()
-	lossTarget := c.lbc.Update(delivered)
-	delayTarget := c.drc.Update(arrival, delivered, rtt)
+	delivered := c.dre.getRate()
+	lossTarget := c.lbc.update(delivered)
+	delayTarget := c.drc.update(arrival, delivered, rtt)
 	c.rate = min(lossTarget, delayTarget)
 	c.log.Tracef("rtt=%v, delivered=%v, lossTarget=%v, delayTarget=%v, target=%v", rtt.Nanoseconds(), delivered, lossTarget, delayTarget, c.rate)
 	return c.rate
