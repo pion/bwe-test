@@ -254,3 +254,40 @@ func (s *Sender) SignalHTTP(addr, route string) error {
 
 	return s.AcceptAnswer(&answer)
 }
+
+// GetSource returns the media source used by the sender.
+func (s *Sender) GetSource() MediaSource {
+	return s.source
+}
+
+// ConfigurableWebRTCSender interface implementation
+
+// GetSettingEngine returns the setting engine.
+func (s *Sender) GetSettingEngine() *webrtc.SettingEngine {
+	return s.settingEngine
+}
+
+// GetMediaEngine returns the media engine.
+func (s *Sender) GetMediaEngine() *webrtc.MediaEngine {
+	return s.mediaEngine
+}
+
+// GetRegistry returns the interceptor registry.
+func (s *Sender) GetRegistry() *interceptor.Registry {
+	return s.registry
+}
+
+// GetEstimatorChan returns the bandwidth estimator channel.
+func (s *Sender) GetEstimatorChan() chan cc.BandwidthEstimator {
+	return s.estimatorChan
+}
+
+// SetLogger sets the logger.
+func (s *Sender) SetLogger(logger logging.LeveledLogger) {
+	s.log = logger
+}
+
+// SetCCLogWriter sets the congestion control log writer.
+func (s *Sender) SetCCLogWriter(w io.Writer) {
+	s.ccLogWriter = w
+}
