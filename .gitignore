@@ -1,8 +1,28 @@
-# SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
+# SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
 # SPDX-License-Identifier: MIT
 
-*.y4m
-*.ivf
+### JetBrains IDE ###
+#####################
 .idea/
-data/
-bwe-test
+
+### Emacs Temporary Files ###
+#############################
+*~
+
+### Folders ###
+###############
+bin/
+vendor/
+node_modules/
+
+### Files ###
+#############
+*.ivf
+*.ogg
+tags
+cover.out
+*.sw[poe]
+*.wasm
+examples/sfu-ws/cert.pem
+examples/sfu-ws/key.pem
+wasm_exec.js
