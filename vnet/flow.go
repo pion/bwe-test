@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
 // SPDX-License-Identifier: MIT
 
+//go:build !js
+// +build !js
+
 // Package main implements virtual network functionality for bandwidth estimation tests.
 package main
 
