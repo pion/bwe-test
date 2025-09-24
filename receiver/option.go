@@ -73,3 +73,14 @@ func SetLoggerFactory(loggerFactory plogging.LoggerFactory) Option {
 		return nil
 	}
 }
+
+// SaveVideo returns an Option that enables video saving to IVF files.
+// The basePath specifies the base filename for output files (without extension).
+// For multiple tracks, files will be named as basePath_track-N.ivf.
+func SaveVideo(basePath string) Option {
+	return func(r *Receiver) error {
+		r.outputBasePath = basePath
+
+		return nil
+	}
+}
