@@ -4,10 +4,10 @@ go 1.21
 
 require (
 	github.com/gorilla/websocket v1.5.3
-	github.com/pion/interceptor v0.1.37
+	github.com/pion/interceptor v0.1.39
 	github.com/pion/logging v0.2.3
 	github.com/pion/rtcp v1.2.15
-	github.com/pion/rtp v1.8.15
+	github.com/pion/rtp v1.8.18
 	github.com/pion/transport/v3 v3.0.7
 	github.com/pion/webrtc/v4 v4.1.0
 	github.com/stretchr/testify v1.10.0
