@@ -2,7 +2,7 @@ module github.com/pion/bwe-test
 
 go 1.21
 
-toolchain go1.24.4
+toolchain go1.25.1
 
 require (
 	github.com/gorilla/websocket v1.5.3
