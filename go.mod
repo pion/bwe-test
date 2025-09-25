@@ -10,7 +10,7 @@ require (
 	github.com/pion/rtp v1.8.15
 	github.com/pion/transport/v3 v3.0.7
 	github.com/pion/webrtc/v4 v4.1.0
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 	golang.org/x/sync v0.11.0
 )
 
