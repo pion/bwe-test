@@ -16,6 +16,7 @@ import (
 	"github.com/pion/logging"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v4"
+	"github.com/pion/webrtc/v4/pkg/media/ivfwriter"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -52,7 +53,7 @@ func TestReceiver_Close(t *testing.T) {
 	mockWriter := &mockWriteCloser{}
 	(*receiver.videoWriters)["test-track"] = mockWriter
 
-	mockIVFWriter, err := NewIVFWriter(&mockWriteCloser{}, 640, 480)
+	mockIVFWriter, err := ivfwriter.NewWith(&mockWriteCloser{}, ivfwriter.WithCodec("video/VP8"))
 	assert.NoError(t, err, "NewIVFWriter() should not error")
 	(*receiver.ivfWriters)["test-track"] = mockIVFWriter
 
@@ -103,34 +104,50 @@ func TestReceiver_InitializeIVFWriter(t *testing.T) {
 	assert.NotNil(t, (*receiver.ivfWriters)["test-track"], "initializeIVFWriter() should have created IVF writer")
 }
 
-func TestReceiver_WriteFrameToFile(t *testing.T) {
+func TestReceiver_WriteRTPToFile(t *testing.T) {
 	receiver, err := NewReceiver()
 	assert.NoError(t, err, "NewReceiver() should not error")
 
 	// Setup IVF writer
 	buf := &mockWriteCloser{}
-	ivfWriter, err := NewIVFWriter(buf, 640, 480)
+	ivfWriter, err := ivfwriter.NewWith(buf, ivfwriter.WithCodec("video/VP8"))
 	assert.NoError(t, err, "NewIVFWriter() should not error")
 	(*receiver.ivfWriters)["test-track"] = ivfWriter
 
-	// Test writing a keyframe
-	frameData := []byte{0x10, 0x02, 0x00, 0x9d, 0x01, 0x2a}
-	timestamp := uint64(1000)
+	// Test writing RTP packets
+	packet := &rtp.Packet{
+		Header: rtp.Header{
+			Version:        2,
+			Marker:         true,
+			PayloadType:    96,
+			SequenceNumber: 1,
+			Timestamp:      1000,
+			SSRC:           12345,
+		},
+		Payload: []byte{0x10, 0x02, 0x00, 0x9d, 0x01, 0x2a}, // VP8 keyframe
+	}
 	stats := &trackStats{startTime: time.Now()}
 
-	receiver.writeFrameToFile("test-track", frameData, true, timestamp, stats)
+	receiver.writeRTPToFile("test-track", packet, stats)
 
-	assert.Equal(t, 1, stats.keyframesReceived, "writeFrameToFile() should increment keyframesReceived to 1")
-	assert.Equal(t, 1, stats.framesAssembled, "writeFrameToFile() should increment framesAssembled to 1")
+	assert.Equal(t, 1, stats.framesAssembled, "writeRTPToFile() should increment framesAssembled to 1")
 
-	// Test writing a non-keyframe to exercise the else branch
-	receiver.writeFrameToFile("test-track", frameData, false, timestamp+1000, stats)
+	// Test writing another packet
+	packet2 := &rtp.Packet{
+		Header: rtp.Header{
+			Version:        2,
+			Marker:         false,
+			PayloadType:    96,
+			SequenceNumber: 2,
+			Timestamp:      2000,
+			SSRC:           12345,
+		},
+		Payload: []byte{0x10, 0x01, 0x9d, 0x01, 0x2a}, // VP8 non-keyframe
+	}
 
-	assert.Equal(t, 1, stats.keyframesReceived,
-		"writeFrameToFile() keyframesReceived should still be 1 after non-keyframe")
-	assert.Equal(t, 2, stats.framesAssembled, "writeFrameToFile() framesAssembled should be 2 after non-keyframe")
+	receiver.writeRTPToFile("test-track", packet2, stats)
 
-	// Skip error writer test to avoid conflicts
+	assert.Equal(t, 2, stats.framesAssembled, "writeRTPToFile() framesAssembled should be 2 after second packet")
 }
 
 // Mock implementation for testing.
