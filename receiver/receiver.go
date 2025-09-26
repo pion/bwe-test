@@ -23,6 +23,7 @@ import (
 	"github.com/pion/rtp"
 	"github.com/pion/transport/v3/vnet"
 	"github.com/pion/webrtc/v4"
+	"github.com/pion/webrtc/v4/pkg/media/ivfwriter"
 )
 
 // Receiver manages a WebRTC connection for receiving media.
@@ -36,16 +37,16 @@ type Receiver struct {
 
 	log logging.LeveledLogger
 
-	outputBasePath string                     // Base path for output files
-	videoWriters   *map[string]io.WriteCloser // Writers for each track, indexed by track identifier
-	ivfWriters     *map[string]*IVFWriter     // IVF formatters for each track, indexed by track identifier
-	trackCounter   int                        // Counter for naming tracks
+	outputBasePath string                           // Base path for output files
+	videoWriters   *map[string]io.WriteCloser       // Writers for each track, indexed by track identifier
+	ivfWriters     *map[string]*ivfwriter.IVFWriter // Pion's IVF writers for each track, indexed by track identifier
+	trackCounter   int                              // Counter for naming tracks
 }
 
 // NewReceiver creates a new WebRTC receiver with the given options.
 func NewReceiver(opts ...Option) (*Receiver, error) {
 	videoWritersMap := make(map[string]io.WriteCloser)
-	ivfWritersMap := make(map[string]*IVFWriter)
+	ivfWritersMap := make(map[string]*ivfwriter.IVFWriter)
 
 	receiver := &Receiver{
 		settingEngine:  &webrtc.SettingEngine{},
@@ -376,45 +377,46 @@ func (r *Receiver) processVP8Packet(packet *rtp.Packet, trackInfo *trackInfo, fr
 		}
 	}
 
-	// Process the VP8 packet and get complete frames
-	frameReady, frameData, isKeyFrame, timestamp := frameAssembler.ProcessPacket(packet)
+	// Write RTP packet directly to IVF using Pion's writer
+	r.writeRTPToFile(trackInfo.identifier, packet, stats)
 
-	// If we have a complete frame, write it to the IVF file
+	// Also process frames for potential decoder integration
+	frameReady, frameData, isKeyFrame, timestamp := frameAssembler.ProcessPacket(packet)
 	if frameReady && len(frameData) > 0 {
-		r.writeFrameToFile(trackInfo.identifier, frameData, isKeyFrame, timestamp, stats)
+		if isKeyFrame {
+			stats.keyframesReceived++
+			elapsedTime := time.Since(stats.startTime)
+			r.log.Infof("Assembled VP8 keyframe: size=%d, timestamp=%d, elapsed=%v",
+				len(frameData), timestamp, elapsedTime)
+		}
+		// frameData can be used for decoder.Decode(frameData) in the future
 	}
 }
 
 // initializeIVFWriter creates and initializes an IVF writer for a track.
 func (r *Receiver) initializeIVFWriter(trackIdentifier string, videoWidth, videoHeight uint16) error {
-	ivfWriter, err := NewIVFWriter((*r.videoWriters)[trackIdentifier], videoWidth, videoHeight)
+	// Use Pion's IVF writer with VP8 codec
+	ivfWriter, err := ivfwriter.NewWith((*r.videoWriters)[trackIdentifier],
+		ivfwriter.WithCodec(webrtc.MimeTypeVP8))
 	if err != nil {
 		return err
 	}
 	(*r.ivfWriters)[trackIdentifier] = ivfWriter
-	r.log.Infof("Created IVF writer with dimensions %dx%d", videoWidth, videoHeight)
+	r.log.Infof("Created Pion IVF writer for VP8")
 
 	return nil
 }
 
-// writeFrameToFile writes a video frame to the output file.
-func (r *Receiver) writeFrameToFile(
-	trackIdentifier string, frameData []byte, isKeyFrame bool,
-	timestamp uint64, stats *trackStats,
+// writeRTPToFile writes an RTP packet to the IVF file using Pion's writer.
+func (r *Receiver) writeRTPToFile(
+	trackIdentifier string, packet *rtp.Packet, stats *trackStats,
 ) {
-	if isKeyFrame {
-		stats.keyframesReceived++
-		elapsedTime := time.Since(stats.startTime)
-		r.log.Infof("Writing VP8 keyframe to IVF file: size=%d, timestamp=%d, elapsed=%v",
-			len(frameData), timestamp, elapsedTime)
-	} else {
-		r.log.Debugf("Writing VP8 frame to IVF file: size=%d", len(frameData))
-	}
-
-	if err := (*r.ivfWriters)[trackIdentifier].WriteFrame(frameData, timestamp); err != nil {
-		r.log.Errorf("Failed to write video frame: %v", err)
+	if err := (*r.ivfWriters)[trackIdentifier].WriteRTP(packet); err != nil {
+		r.log.Errorf("Failed to write RTP packet to IVF: %v", err)
 	} else {
 		stats.framesAssembled++
+		r.log.Debugf("Wrote RTP packet to IVF: size=%d, timestamp=%d",
+			len(packet.Payload), packet.Timestamp)
 	}
 }
 

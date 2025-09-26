@@ -15,6 +15,7 @@ import (
 	"github.com/pion/logging"
 	"github.com/pion/transport/v3/vnet"
 	"github.com/pion/webrtc/v4"
+	"github.com/pion/webrtc/v4/pkg/media/ivfwriter"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -99,7 +100,7 @@ func TestSaveVideo(t *testing.T) {
 
 	receiver := &Receiver{
 		videoWriters: &map[string]io.WriteCloser{},
-		ivfWriters:   &map[string]*IVFWriter{},
+		ivfWriters:   &map[string]*ivfwriter.IVFWriter{},
 		log:          logging.NewDefaultLoggerFactory().NewLogger("test"),
 	}
 
