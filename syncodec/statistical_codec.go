@@ -225,6 +225,9 @@ func (c *StatisticalCodec) GetTargetBitrate() int {
 // greater than c.rMax, bitrate will be set to c.rMax. If r is lower than
 // c.rMin, bitrate will be set to c.rMin.
 func (c *StatisticalCodec) SetTargetBitrate(r int) {
+	c.targetBitrateLock.Lock()
+	defer c.targetBitrateLock.Unlock()
+
 	if r < c.targetBitrateBps {
 		c.targetBitrateBps = maximum(r, c.rMin)
 
@@ -244,10 +247,14 @@ func (c *StatisticalCodec) nextFrame() Frame {
 		}
 	}
 
-	bytesPerFrame := c.targetBitrateBps / (8.0 * c.fps)
+	c.targetBitrateLock.Lock()
+	bps := c.targetBitrateBps
+	c.targetBitrateLock.Unlock()
+
+	bytesPerFrame := bps / (8.0 * c.fps)
 
 	if c.remainingBurstFrames > 0 {
-		size := (c.targetBitrateBps * c.burstFrameCount) / (c.burstFrameSize + (c.burstFrameCount - 1))
+		size := (bps * c.burstFrameCount) / (c.burstFrameSize + (c.burstFrameCount - 1))
 
 		return Frame{
 			Content:  make([]byte, size),
