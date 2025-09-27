@@ -1,6 +1,6 @@
 module github.com/pion/bwe-test
 
-go 1.21
+go 1.24.0
 
 toolchain go1.25.1
 
@@ -14,7 +14,7 @@ require (
 	github.com/pion/transport/v3 v3.0.7
 	github.com/pion/webrtc/v4 v4.1.4
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/sync v0.11.0
+	golang.org/x/sync v0.17.0
 )
 
 require (
