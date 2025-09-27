@@ -98,7 +98,7 @@ func TestReceiver_InitializeIVFWriter(t *testing.T) {
 	mockWriter := &mockWriteCloser{}
 	(*receiver.videoWriters)["test-track"] = mockWriter
 
-	err = receiver.initializeIVFWriter("test-track", 640, 480)
+	err = receiver.initializeIVFWriter("test-track")
 	assert.NoError(t, err, "initializeIVFWriter() should not error")
 
 	assert.NotNil(t, (*receiver.ivfWriters)["test-track"], "initializeIVFWriter() should have created IVF writer")
@@ -369,7 +369,7 @@ func TestReceiver_WorkflowFunctionsCoverage(t *testing.T) {
 	}
 
 	// This tests processVP8Packet
-	receiver.processVP8Packet(packet, testTrackInfo, frameAssembler, 640, 480, testStats)
+	receiver.processVP8Packet(packet, testTrackInfo, frameAssembler, testStats)
 }
 
 // Final push for coverage - test more edge cases.

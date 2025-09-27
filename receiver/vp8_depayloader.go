@@ -13,11 +13,9 @@ import (
 
 // VP8Depayloader handles VP8 RTP payloads using Pion's VP8Packet.
 type VP8Depayloader struct {
-	vp8Packet          *codecs.VP8Packet
-	frameBuffer        [][]byte // Store frame parts
-	currentTimestamp   uint32
-	frameComplete      bool
-	lastSequenceNumber uint16
+	vp8Packet        *codecs.VP8Packet
+	frameBuffer      [][]byte // Store frame parts
+	currentTimestamp uint32
 }
 
 // NewVP8Depayloader creates a new VP8 depayloader.

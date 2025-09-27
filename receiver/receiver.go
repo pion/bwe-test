@@ -161,7 +161,7 @@ func (r *Receiver) onTrack(trackRemote *webrtc.TrackRemote, rtpReceiver *webrtc.
 	}
 
 	// Setup VP8 processing
-	frameAssembler, videoWidth, videoHeight := r.setupVP8Processing(trackInfo)
+	frameAssembler, _, _ := r.setupVP8Processing(trackInfo)
 	stats := &trackStats{}
 
 	// Start statistics goroutine
@@ -171,7 +171,7 @@ func (r *Receiver) onTrack(trackRemote *webrtc.TrackRemote, rtpReceiver *webrtc.
 	// Main packet processing loop
 	r.processPackets(
 		ctx, trackRemote, rtpReceiver, trackInfo, frameAssembler,
-		videoWidth, videoHeight, bytesReceivedChan, stats,
+		bytesReceivedChan, stats,
 	)
 }
 
@@ -327,7 +327,7 @@ func (r *Receiver) setReadDeadlines(rtpReceiver *webrtc.RTPReceiver, trackRemote
 
 // processPackets handles the main packet processing loop for VP8 tracks.
 func (r *Receiver) processPackets(ctx context.Context, trackRemote *webrtc.TrackRemote, rtpReceiver *webrtc.RTPReceiver,
-	trackInfo *trackInfo, frameAssembler *VP8FrameAssembler, videoWidth, videoHeight uint16,
+	trackInfo *trackInfo, frameAssembler *VP8FrameAssembler,
 	bytesReceivedChan chan int, stats *trackStats,
 ) {
 	for {
@@ -354,14 +354,14 @@ func (r *Receiver) processPackets(ctx context.Context, trackRemote *webrtc.Track
 			bytesReceivedChan <- packet.MarshalSize()
 			stats.rtpPacketsReceived++
 
-			r.processVP8Packet(packet, trackInfo, frameAssembler, videoWidth, videoHeight, stats)
+			r.processVP8Packet(packet, trackInfo, frameAssembler, stats)
 		}
 	}
 }
 
 // processVP8Packet processes a single VP8 RTP packet.
 func (r *Receiver) processVP8Packet(packet *rtp.Packet, trackInfo *trackInfo, frameAssembler *VP8FrameAssembler,
-	videoWidth, videoHeight uint16, stats *trackStats,
+	stats *trackStats,
 ) {
 	// Only process if we have a video writer for this track
 	if (*r.videoWriters)[trackInfo.identifier] == nil {
@@ -370,7 +370,7 @@ func (r *Receiver) processVP8Packet(packet *rtp.Packet, trackInfo *trackInfo, fr
 
 	// Initialize IVF writer if needed
 	if (*r.ivfWriters)[trackInfo.identifier] == nil {
-		if err := r.initializeIVFWriter(trackInfo.identifier, videoWidth, videoHeight); err != nil {
+		if err := r.initializeIVFWriter(trackInfo.identifier); err != nil {
 			r.log.Errorf("Failed to create IVF writer: %v", err)
 
 			return
@@ -394,7 +394,7 @@ func (r *Receiver) processVP8Packet(packet *rtp.Packet, trackInfo *trackInfo, fr
 }
 
 // initializeIVFWriter creates and initializes an IVF writer for a track.
-func (r *Receiver) initializeIVFWriter(trackIdentifier string, videoWidth, videoHeight uint16) error {
+func (r *Receiver) initializeIVFWriter(trackIdentifier string) error {
 	// Use Pion's IVF writer with VP8 codec
 	ivfWriter, err := ivfwriter.NewWith((*r.videoWriters)[trackIdentifier],
 		ivfwriter.WithCodec(webrtc.MimeTypeVP8))
