@@ -204,8 +204,7 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 		},
 	}
 	r.runNetworkSimulation(path, nm)
-
-	return nil
+	return nm.Close()
 }
 
 func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
@@ -271,8 +270,7 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 		},
 	}
 	r.runNetworkSimulation(path, nm)
-
-	return nil
+	return nm.Close()
 }
 
 // pathCharacteristics defines the network characteristics for the test.

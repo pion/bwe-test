@@ -1,6 +1,6 @@
 module github.com/pion/bwe-test
 
-go 1.21
+go 1.25
 
 toolchain go1.25.1
 
