@@ -162,12 +162,7 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 	if err != nil {
 		return fmt.Errorf("setup simple flow: %w", err)
 	}
-	defer func(flow Flow) {
-		err = flow.Close()
-		if err != nil {
-			r.logger.Errorf("flow close: %v", err)
-		}
-	}(flow)
+	defer flow.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -204,8 +199,7 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 		},
 	}
 	r.runNetworkSimulation(path, nm)
-
-	return nil
+	return nm.Close()
 }
 
 func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
@@ -222,12 +216,10 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 
 	for i := 0; i < 2; i++ {
 		flow, err := NewSimpleFlow(r.loggerFactory, nm, i, r.senderMode, dataDir)
-		defer func(flow Flow) {
-			err = flow.Close()
-			if err != nil {
-				r.logger.Errorf("flow close: %v", err)
-			}
-		}(flow)
+		if err != nil {
+			return err
+		}
+		defer flow.Close()
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -271,8 +263,7 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 		},
 	}
 	r.runNetworkSimulation(path, nm)
-
-	return nil
+	return nm.Close()
 }
 
 // pathCharacteristics defines the network characteristics for the test.

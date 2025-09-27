@@ -44,6 +44,7 @@ func (r *RouterWithConfig) getIPMapping() (private, public string, err error) {
 
 // NetworkManager manages the virtual network topology for bandwidth estimation tests.
 type NetworkManager struct {
+	wan         *vnet.Router
 	leftRouter  *RouterWithConfig
 	leftTBF     *vnet.TokenBucketFilter
 	rightRouter *RouterWithConfig
@@ -94,6 +95,7 @@ func NewManager() (*NetworkManager, error) {
 	}
 
 	manager := &NetworkManager{
+		wan:         wan,
 		leftRouter:  leftRouter,
 		leftTBF:     leftTBF,
 		rightRouter: rightRouter,
@@ -105,6 +107,15 @@ func NewManager() (*NetworkManager, error) {
 	}
 
 	return manager, nil
+}
+
+func (m *NetworkManager) Close() error {
+	m.wan.Stop()
+	m.leftRouter.Stop()
+	m.rightRouter.Stop()
+	m.leftTBF.Close()
+	m.rightTBF.Close()
+	return nil
 }
 
 // GetLeftNet creates and returns a new Net on the left side of the network topology.
