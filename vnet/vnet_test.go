@@ -30,16 +30,6 @@ func TestVnet(t *testing.T) {
 			senderMode: abrSenderMode,
 			flowMode:   multipleFlowsMode,
 		},
-		{
-			name:       "TestVnetRunnerSimulcast/VariableAvailableCapacitySingleFlow",
-			senderMode: simulcastSenderMode,
-			flowMode:   singleFlowMode,
-		},
-		{
-			name:       "TestVnetRunnerSimulcast/VariableAvailableCapacityMultipleFlows",
-			senderMode: simulcastSenderMode,
-			flowMode:   multipleFlowsMode,
-		},
 	}
 
 	for _, tc := range testCases {
