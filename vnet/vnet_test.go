@@ -43,17 +43,19 @@ func TestVnet(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		synctest.Test(t, func(t *testing.T) {
-			runner := Runner{
-				loggerFactory: lf,
-				logger:        logger,
-				name:          tc.name,
-				senderMode:    tc.senderMode,
-				flowMode:      tc.flowMode,
-			}
-			err := runner.Run()
-			assert.NoError(t, err)
-			synctest.Wait()
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				runner := Runner{
+					loggerFactory: lf,
+					logger:        logger,
+					name:          tc.name,
+					senderMode:    tc.senderMode,
+					flowMode:      tc.flowMode,
+				}
+				err := runner.Run()
+				assert.NoError(t, err)
+				synctest.Wait()
+			})
 		})
 	}
 
