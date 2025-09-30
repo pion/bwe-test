@@ -163,7 +163,6 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 	if err != nil {
 		return fmt.Errorf("setup simple flow: %w", err)
 	}
-	defer flow.Close()
 
 	var wg sync.WaitGroup
 	defer wg.Wait()
@@ -203,6 +202,10 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 		},
 	}
 	r.runNetworkSimulation(path, nm)
+	if err = flow.Close(); err != nil {
+		r.logger.Errorf("error on closing flow: %v", err)
+	}
+
 	return nm.Close()
 }
 
