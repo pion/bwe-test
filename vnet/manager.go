@@ -39,7 +39,7 @@ func (r *RouterWithConfig) getIPMapping() (private, public string, err error) {
 	public = mapping[0]
 	private = mapping[1]
 
-	return
+	return private, public, err
 }
 
 // NetworkManager manages the virtual network topology for bandwidth estimation tests.
@@ -110,10 +110,19 @@ func NewManager() (*NetworkManager, error) {
 }
 
 func (m *NetworkManager) Close() error {
-	m.leftTBF.Close()
-	m.rightTBF.Close()
-	m.wan.Stop()
-	return nil
+	var errs []error
+
+	if err := m.leftTBF.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := m.rightTBF.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := m.wan.Stop(); err != nil {
+		errs = append(errs, err)
+	}
+
+	return errors.Join(errs...)
 }
 
 // GetLeftNet creates and returns a new Net on the left side of the network topology.

@@ -152,7 +152,11 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 	if err != nil {
 		return fmt.Errorf("new manager: %w", err)
 	}
-	defer nm.Close()
+	defer func() {
+		if closeErr := nm.Close(); closeErr != nil {
+			r.logger.Errorf("failed to close network manager: %v", closeErr)
+		}
+	}()
 
 	dataDir := fmt.Sprintf("data/%v", r.name)
 	err = os.MkdirAll(dataDir, 0o750)
@@ -203,6 +207,7 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 		},
 	}
 	r.runNetworkSimulation(path, nm)
+
 	return flow.Close()
 }
 
@@ -211,7 +216,11 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 	if err != nil {
 		return fmt.Errorf("new manager: %w", err)
 	}
-	defer nm.Close()
+	defer func() {
+		if closeErr := nm.Close(); closeErr != nil {
+			r.logger.Errorf("failed to close network manager: %v", closeErr)
+		}
+	}()
 
 	dataDir := fmt.Sprintf("data/%v", r.name)
 	err = os.MkdirAll(dataDir, 0o750)
@@ -224,7 +233,8 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 
 	var flows []Flow
 	for i := 0; i < 2; i++ {
-		flow, err := NewSimpleFlow(r.loggerFactory, nm, i, r.senderMode, dataDir)
+		var flow Flow
+		flow, err = NewSimpleFlow(r.loggerFactory, nm, i, r.senderMode, dataDir)
 		if err != nil {
 			return err
 		}
@@ -277,6 +287,7 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 			panic(err)
 		}
 	}
+
 	return nil
 }
 
