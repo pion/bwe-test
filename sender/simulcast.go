@@ -81,7 +81,10 @@ func NewSimulcastFilesSource() *SimulcastFilesSource {
 
 // SetTargetBitrate sets the target bitrate for the simulcast source.
 func (s *SimulcastFilesSource) SetTargetBitrate(rate int) {
-	s.updateTargetBitrate <- rate
+	select {
+	case s.updateTargetBitrate <- rate:
+	case <-s.done:
+	}
 }
 
 // SetWriter sets the sample writer function.
