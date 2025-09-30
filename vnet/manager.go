@@ -110,11 +110,9 @@ func NewManager() (*NetworkManager, error) {
 }
 
 func (m *NetworkManager) Close() error {
-	m.wan.Stop()
-	m.leftRouter.Stop()
-	m.rightRouter.Stop()
 	m.leftTBF.Close()
 	m.rightTBF.Close()
+	m.wan.Stop()
 	return nil
 }
 
