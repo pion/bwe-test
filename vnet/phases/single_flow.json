@@ -1,0 +1,26 @@
+// SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
+[
+    {
+        "durationSeconds": 40,
+        "capacityRatio": 1.0,
+        "maxBurstKbps": 160
+    },
+    {
+        "durationSeconds": 20,
+        "capacityRatio": 2.5,
+        "maxBurstKbps": 160
+    },
+    {
+        "durationSeconds": 20,
+        "capacityRatio": 0.5,
+        "maxBurstKbps": 160
+    },
+    {
+        "durationSeconds": 20,
+        "capacityRatio": 1.0,
+        "maxBurstKbps": 160
+    }
+]
+

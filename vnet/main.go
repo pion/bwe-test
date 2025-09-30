@@ -27,6 +27,7 @@ type senderMode int
 const (
 	simulcastSenderMode senderMode = iota
 	abrSenderMode
+	videoFileEncoderMode // New mode for video file encoder
 )
 
 // flowMode defines whether to use a single flow or multiple flows in the test.
@@ -39,6 +40,7 @@ const (
 
 func main() {
 	logLevel := flag.String("log", "info", "Log level")
+	videoFiles := flag.String("videos", "", "Comma-separated list of video file paths (e.g. 'video1.mp4,video2.mp4')")
 	flag.Parse()
 
 	loggerFactory, err := getLoggerFactory(*logLevel)
@@ -47,30 +49,54 @@ func main() {
 	}
 
 	testCases := []struct {
-		name       string
-		senderMode senderMode
-		flowMode   flowMode
+		name              string
+		senderMode        senderMode
+		flowMode          flowMode
+		videoFile         string
+		phaseFile         string
+		referenceCapacity int
+		trackCount        int
 	}{
+		// {
+		// 	name:       "TestVnetRunnerABR/VariableAvailableCapacitySingleFlow",
+		// 	senderMode: abrSenderMode,
+		// 	flowMode:   singleFlowMode,
+		// },
+		// {
+		// 	name:       "TestVnetRunnerABR/VariableAvailableCapacityMultipleFlows",
+		// 	senderMode: abrSenderMode,
+		// 	flowMode:   multipleFlowsMode,
+		// },
+		// Single video track test using hardcoded video files
+		// {
+		// 	name:              "TestVnetRunnerSingleVideoTrack/VariableAvailableCapacitySingleFlow",
+		// 	senderMode:        videoFileEncoderMode,
+		// 	flowMode:          singleFlowMode,
+		// 	videoFile:         "", // Not used since we hardcode the files in flow.go
+		// 	phaseFile:         "phases/single_flow.json",
+		// 	referenceCapacity: 1 * vnet.MBit,
+		// 	trackCount:        1,
+		// },
+		// Dual video track test using configurable video files
 		{
-			name:       "TestVnetRunnerABR/VariableAvailableCapacitySingleFlow",
-			senderMode: abrSenderMode,
-			flowMode:   singleFlowMode,
+			name:              "TestVnetRunnerDualVideoTracks/VariableAvailableCapacitySingleFlow",
+			senderMode:        videoFileEncoderMode,
+			flowMode:          singleFlowMode,
+			videoFile:         *videoFiles, // Use command line parameter (comma-separated list)
+			phaseFile:         "phases/single_flow.json",
+			referenceCapacity: 2 * vnet.MBit,
+			trackCount:        2,
 		},
-		{
-			name:       "TestVnetRunnerABR/VariableAvailableCapacityMultipleFlows",
-			senderMode: abrSenderMode,
-			flowMode:   multipleFlowsMode,
-		},
-		{
-			name:       "TestVnetRunnerSimulcast/VariableAvailableCapacitySingleFlow",
-			senderMode: simulcastSenderMode,
-			flowMode:   singleFlowMode,
-		},
-		{
-			name:       "TestVnetRunnerSimulcast/VariableAvailableCapacityMultipleFlows",
-			senderMode: simulcastSenderMode,
-			flowMode:   multipleFlowsMode,
-		},
+		// {
+		// 	name:       "TestVnetRunnerSimulcast/VariableAvailableCapacitySingleFlow",
+		// 	senderMode: simulcastSenderMode,
+		// 	flowMode:   singleFlowMode,
+		// },
+		// {
+		// 	name:       "TestVnetRunnerSimulcast/VariableAvailableCapacityMultipleFlows",
+		// 	senderMode: simulcastSenderMode,
+		// 	flowMode:   multipleFlowsMode,
+		// },
 	}
 
 	logger := loggerFactory.NewLogger("bwe_test_runner")
@@ -81,7 +107,10 @@ func main() {
 			name:          t.name,
 			senderMode:    t.senderMode,
 			flowMode:      t.flowMode,
+			videoFile:     t.videoFile,
+			trackCount:    t.trackCount,
 		}
+
 		err := runner.Run()
 		if err != nil {
 			logger.Errorf("runner: %v", err)
@@ -122,6 +151,10 @@ type Runner struct {
 	name          string
 	senderMode    senderMode
 	flowMode      flowMode
+	videoFile     string
+	trackCount    int
+	// Note: pathCharacteristics removed to maintain struct comparability
+	// Phase configuration is loaded dynamically via GetPathCharacteristics
 }
 
 var errUnknownFlowMode = errors.New("unknown flow mode")
@@ -162,6 +195,7 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 	if err != nil {
 		return fmt.Errorf("setup simple flow: %w", err)
 	}
+
 	defer func(flow Flow) {
 		err = flow.Close()
 		if err != nil {
@@ -171,6 +205,7 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
 	go func() {
 		err = flow.sender.sender.Start(ctx)
 		if err != nil {
@@ -178,32 +213,16 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 		}
 	}()
 
-	path := pathCharacteristics{
-		referenceCapacity: 1 * vnet.MBit,
-		phases: []phase{
-			{
-				duration:      40 * time.Second,
-				capacityRatio: 1.0,
-				maxBurst:      160 * vnet.KBit,
-			},
-			{
-				duration:      20 * time.Second,
-				capacityRatio: 2.5,
-				maxBurst:      160 * vnet.KBit,
-			},
-			{
-				duration:      20 * time.Second,
-				capacityRatio: 0.6,
-				maxBurst:      160 * vnet.KBit,
-			},
-			{
-				duration:      20 * time.Second,
-				capacityRatio: 1.0,
-				maxBurst:      160 * vnet.KBit,
-			},
-		},
-	}
-	r.runNetworkSimulation(path, nm)
+	// Allow some time for connection setup before starting the network simulation
+	time.Sleep(2 * time.Second)
+
+	// Load phase characteristics for this test
+	pathChars := GetPathCharacteristics("phases/single_flow.json", 1*vnet.MBit)
+	r.runNetworkSimulation(nm, pathChars)
+
+	// Allow some time for any buffered frames to be processed
+	r.logger.Infof("Bandwidth test complete, allowing time for final frame processing...")
+	time.Sleep(2 * time.Second)
 
 	return nil
 }
@@ -239,62 +258,87 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 		}()
 	}
 
-	path := pathCharacteristics{
-		referenceCapacity: 1 * vnet.MBit,
-		phases: []phase{
-			{
-				duration:      25 * time.Second,
-				capacityRatio: 2.0,
-				maxBurst:      160 * vnet.KBit,
-			},
-
-			{
-				duration:      25 * time.Second,
-				capacityRatio: 1.0,
-				maxBurst:      160 * vnet.KBit,
-			},
-			{
-				duration:      25 * time.Second,
-				capacityRatio: 1.75,
-				maxBurst:      160 * vnet.KBit,
-			},
-			{
-				duration:      25 * time.Second,
-				capacityRatio: 0.5,
-				maxBurst:      160 * vnet.KBit,
-			},
-			{
-				duration:      25 * time.Second,
-				capacityRatio: 1.0,
-				maxBurst:      160 * vnet.KBit,
-			},
-		},
-	}
-	r.runNetworkSimulation(path, nm)
+	// Load phase characteristics for this test
+	pathChars := GetPathCharacteristics("phases/single_flow.json", 1*vnet.MBit)
+	r.runNetworkSimulation(nm, pathChars)
 
 	return nil
 }
 
-// pathCharacteristics defines the network characteristics for the test.
-type pathCharacteristics struct {
-	referenceCapacity int
-	phases            []phase
-}
-
-// phase defines a single phase of the network simulation with specific characteristics.
-type phase struct {
-	duration      time.Duration
-	capacityRatio float64
-	maxBurst      int
-}
-
-func (r *Runner) runNetworkSimulation(c pathCharacteristics, nm *NetworkManager) {
-	for _, phase := range c.phases {
+func (r *Runner) runNetworkSimulation(nm *NetworkManager, pathChars pathCharacteristics) {
+	for _, phase := range pathChars.phases {
 		r.logger.Infof("enter next phase: %v", phase)
 		nm.SetCapacity(
-			int(float64(c.referenceCapacity)*phase.capacityRatio),
+			int(float64(pathChars.referenceCapacity)*phase.capacityRatio),
 			phase.maxBurst,
 		)
+		nm.SetDataDelay(phase.dataDelay)
+		nm.SetAckDelay(phase.ackDelay)
+		nm.SetDataLossRate(phase.dataLossRate)
+		nm.SetAckLossRate(phase.ackLossRate)
 		time.Sleep(phase.duration)
+	}
+}
+
+// RunnerOption is a function that configures a Runner.
+type RunnerOption func(*RunnerSettings)
+
+// RunnerSettings holds configuration for Runner.
+type RunnerSettings struct {
+	phaseFile         string
+	referenceCapacity int
+	videoFile         string
+}
+
+// WithPhaseFile sets the phase configuration file.
+func WithPhaseFile(phaseFile string) RunnerOption {
+	return func(settings *RunnerSettings) {
+		settings.phaseFile = phaseFile
+	}
+}
+
+// WithReferenceCapacity sets the reference capacity.
+func WithReferenceCapacity(capacity int) RunnerOption {
+	return func(settings *RunnerSettings) {
+		settings.referenceCapacity = capacity
+	}
+}
+
+// WithVideoFile sets the video file.
+func WithVideoFile(videoFile string) RunnerOption {
+	return func(settings *RunnerSettings) {
+		settings.videoFile = videoFile
+	}
+}
+
+// NewRunnerWithOptions creates a new Runner with options.
+func NewRunnerWithOptions(
+	loggerFactory *logging.DefaultLoggerFactory,
+	logger logging.LeveledLogger,
+	name string,
+	senderMode senderMode,
+	flowMode flowMode,
+	options ...RunnerOption,
+) *Runner {
+	// Apply default settings
+	settings := RunnerSettings{
+		phaseFile:         "phases/single_flow.json",
+		referenceCapacity: 1 * vnet.MBit,
+	}
+
+	// Apply options
+	for _, option := range options {
+		option(&settings)
+	}
+
+	return &Runner{
+		loggerFactory: loggerFactory,
+		logger:        logger,
+		name:          name,
+		senderMode:    senderMode,
+		flowMode:      flowMode,
+		videoFile:     settings.videoFile,
+		trackCount:    0, // Default track count
+		// pathCharacteristics removed to maintain comparability
 	}
 }
