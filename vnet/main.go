@@ -243,9 +243,9 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		wg.Go(func() {
-			err = flow.sender.sender.Start(ctx)
-			if err != nil {
-				r.logger.Errorf("sender start: %v", err)
+			startErr := flow.sender.sender.Start(ctx)
+			if startErr != nil {
+				r.logger.Errorf("sender start: %v", startErr)
 			}
 		})
 	}
