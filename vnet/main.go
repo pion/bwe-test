@@ -15,6 +15,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pion/logging"
@@ -151,6 +152,11 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 	if err != nil {
 		return fmt.Errorf("new manager: %w", err)
 	}
+	defer func() {
+		if closeErr := nm.Close(); closeErr != nil {
+			r.logger.Errorf("failed to close network manager: %v", closeErr)
+		}
+	}()
 
 	dataDir := fmt.Sprintf("data/%v", r.name)
 	err = os.MkdirAll(dataDir, 0o750)
@@ -162,21 +168,18 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 	if err != nil {
 		return fmt.Errorf("setup simple flow: %w", err)
 	}
-	defer func(flow Flow) {
-		err = flow.Close()
-		if err != nil {
-			r.logger.Errorf("flow close: %v", err)
-		}
-	}(flow)
+
+	var wg sync.WaitGroup
+	defer wg.Wait()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() {
+	wg.Go(func() {
 		err = flow.sender.sender.Start(ctx)
 		if err != nil {
 			r.logger.Errorf("sender start: %v", err)
 		}
-	}()
+	})
 
 	path := pathCharacteristics{
 		referenceCapacity: 1 * vnet.MBit,
@@ -205,7 +208,7 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 	}
 	r.runNetworkSimulation(path, nm)
 
-	return nil
+	return flow.Close()
 }
 
 func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
@@ -213,6 +216,11 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 	if err != nil {
 		return fmt.Errorf("new manager: %w", err)
 	}
+	defer func() {
+		if closeErr := nm.Close(); closeErr != nil {
+			r.logger.Errorf("failed to close network manager: %v", closeErr)
+		}
+	}()
 
 	dataDir := fmt.Sprintf("data/%v", r.name)
 	err = os.MkdirAll(dataDir, 0o750)
@@ -220,23 +228,26 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 		return fmt.Errorf("mkdir data: %w", err)
 	}
 
+	var wg sync.WaitGroup
+	defer wg.Wait()
+
+	var flows []Flow
 	for i := 0; i < 2; i++ {
-		flow, err := NewSimpleFlow(r.loggerFactory, nm, i, r.senderMode, dataDir)
-		defer func(flow Flow) {
-			err = flow.Close()
-			if err != nil {
-				r.logger.Errorf("flow close: %v", err)
-			}
-		}(flow)
+		var flow Flow
+		flow, err = NewSimpleFlow(r.loggerFactory, nm, i, r.senderMode, dataDir)
+		if err != nil {
+			return err
+		}
+		flows = append(flows, flow)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		go func() {
-			err = flow.sender.sender.Start(ctx)
-			if err != nil {
-				r.logger.Errorf("sender start: %v", err)
+		wg.Go(func() {
+			startErr := flow.sender.sender.Start(ctx)
+			if startErr != nil {
+				r.logger.Errorf("sender start: %v", startErr)
 			}
-		}()
+		})
 	}
 
 	path := pathCharacteristics{
@@ -271,6 +282,11 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 		},
 	}
 	r.runNetworkSimulation(path, nm)
+	for _, f := range flows {
+		if err = f.Close(); err != nil {
+			panic(err)
+		}
+	}
 
 	return nil
 }

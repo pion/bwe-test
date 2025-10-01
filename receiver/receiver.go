@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/interceptor"
@@ -182,7 +183,7 @@ type trackInfo struct {
 }
 
 type trackStats struct {
-	rtpPacketsReceived int
+	rtpPacketsReceived atomic.Int64
 	framesAssembled    int
 	keyframesReceived  int
 	startTime          time.Time
@@ -298,7 +299,7 @@ func (r *Receiver) startStatsGoroutine(ctx context.Context, bytesReceivedChan ch
 				rate := bits / delta.Seconds()
 				mBitPerSecond := rate / float64(vnet.MBit)
 				r.log.Infof("throughput: %.2f Mb/s | RTP packets: %d | Frames: %d | Keyframes: %d",
-					mBitPerSecond, stats.rtpPacketsReceived, stats.framesAssembled, stats.keyframesReceived)
+					mBitPerSecond, stats.rtpPacketsReceived.Load(), stats.framesAssembled, stats.keyframesReceived)
 				bytesReceived = 0
 				last = now
 			case newBytesReceived := <-bytesReceivedChan:
@@ -352,7 +353,7 @@ func (r *Receiver) processPackets(ctx context.Context, trackRemote *webrtc.Track
 			}
 
 			bytesReceivedChan <- packet.MarshalSize()
-			stats.rtpPacketsReceived++
+			stats.rtpPacketsReceived.Add(1)
 
 			r.processVP8Packet(packet, trackInfo, frameAssembler, stats)
 		}
