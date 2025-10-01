@@ -27,6 +27,7 @@ type senderMode int
 const (
 	simulcastSenderMode senderMode = iota
 	abrSenderMode
+	videoFileEncoderMode // New mode for video file encoder
 )
 
 // flowMode defines whether to use a single flow or multiple flows in the test.
@@ -47,9 +48,12 @@ func main() {
 	}
 
 	testCases := []struct {
-		name       string
-		senderMode senderMode
-		flowMode   flowMode
+		name              string
+		senderMode        senderMode
+		flowMode          flowMode
+		videoFile         []string
+		phaseFile         string
+		referenceCapacity int
 	}{
 		{
 			name:       "TestVnetRunnerABR/VariableAvailableCapacitySingleFlow",
@@ -71,16 +75,26 @@ func main() {
 			senderMode: simulcastSenderMode,
 			flowMode:   multipleFlowsMode,
 		},
+		{
+			name:              "TestVnetRunnerDualVideoTracks/VariableAvailableCapacitySingleFlow",
+			senderMode:        videoFileEncoderMode,
+			flowMode:          singleFlowMode,
+			videoFile:         []string{"../sample_videos_0/", "../sample_videos_1/"},
+			phaseFile:         "phases/single_flow.json",
+			referenceCapacity: 1 * vnet.MBit,
+		},
 	}
 
 	logger := loggerFactory.NewLogger("bwe_test_runner")
 	for _, t := range testCases {
 		runner := Runner{
-			loggerFactory: loggerFactory,
-			logger:        logger,
-			name:          t.name,
-			senderMode:    t.senderMode,
-			flowMode:      t.flowMode,
+			loggerFactory:       loggerFactory,
+			logger:              logger,
+			name:                t.name,
+			senderMode:          t.senderMode,
+			flowMode:            t.flowMode,
+			videoFile:           t.videoFile,
+			pathCharacteristics: GetPathCharacteristics(t.phaseFile, t.referenceCapacity),
 		}
 		err := runner.Run()
 		if err != nil {
@@ -117,11 +131,13 @@ func getLoggerFactory(logLevel string) (*logging.DefaultLoggerFactory, error) {
 
 // Runner manages the execution of bandwidth estimation tests.
 type Runner struct {
-	loggerFactory *logging.DefaultLoggerFactory
-	logger        logging.LeveledLogger
-	name          string
-	senderMode    senderMode
-	flowMode      flowMode
+	loggerFactory       *logging.DefaultLoggerFactory
+	logger              logging.LeveledLogger
+	name                string
+	senderMode          senderMode
+	flowMode            flowMode
+	videoFile           []string
+	pathCharacteristics pathCharacteristics
 }
 
 var errUnknownFlowMode = errors.New("unknown flow mode")
@@ -158,27 +174,90 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 		return fmt.Errorf("mkdir data: %w", err)
 	}
 
+	if r.senderMode == videoFileEncoderMode {
+		return r.runVideoFileSingleFlow(nm, dataDir)
+	}
+
+	return r.runStandardSingleFlow(nm, dataDir)
+}
+
+func (r *Runner) runVideoFileSingleFlow(nm *NetworkManager, dataDir string) error {
+	videoFiles := r.convertToVideoFileInfo()
+	flow, err := NewSimpleFlow(r.loggerFactory, nm, 0, r.senderMode, dataDir, videoFiles...)
+	if err != nil {
+		return fmt.Errorf("setup simple flow: %w", err)
+	}
+
+	defer r.closeFlow(flow)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	r.startSender(ctx, flow)
+
+	// Allow some time for connection setup before starting the network simulation
+	time.Sleep(2 * time.Second)
+
+	r.runNetworkSimulation(nm)
+
+	// Allow some time for any buffered frames to be processed
+	r.logger.Infof("Bandwidth test complete, allowing time for final frame processing...")
+	time.Sleep(2 * time.Second)
+
+	return nil
+}
+
+func (r *Runner) runStandardSingleFlow(nm *NetworkManager, dataDir string) error {
 	flow, err := NewSimpleFlow(r.loggerFactory, nm, 0, r.senderMode, dataDir)
 	if err != nil {
 		return fmt.Errorf("setup simple flow: %w", err)
 	}
-	defer func(flow Flow) {
-		err = flow.Close()
-		if err != nil {
-			r.logger.Errorf("flow close: %v", err)
-		}
-	}(flow)
+
+	defer r.closeFlow(flow)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	r.startSender(ctx, flow)
+
+	r.setSingleFlowPathCharacteristics()
+	r.runNetworkSimulation(nm)
+
+	return nil
+}
+
+func (r *Runner) convertToVideoFileInfo() []VideoFileInfo {
+	var videoFiles []VideoFileInfo
+	for i, filePath := range r.videoFile {
+		videoFiles = append(videoFiles, VideoFileInfo{
+			FilePath: filePath,
+			TrackID:  fmt.Sprintf("video-track-%d", i+1),
+			Width:    640,
+			Height:   480,
+		})
+	}
+
+	return videoFiles
+}
+
+func (r *Runner) closeFlow(flow Flow) {
+	err := flow.Close()
+	if err != nil {
+		r.logger.Errorf("flow close: %v", err)
+	}
+}
+
+func (r *Runner) startSender(ctx context.Context, flow Flow) {
 	go func() {
-		err = flow.sender.sender.Start(ctx)
+		err := flow.sender.sender.Start(ctx)
 		if err != nil {
 			r.logger.Errorf("sender start: %v", err)
 		}
 	}()
+}
 
-	path := pathCharacteristics{
+func (r *Runner) setSingleFlowPathCharacteristics() {
+	r.pathCharacteristics = pathCharacteristics{
 		referenceCapacity: 1 * vnet.MBit,
 		phases: []phase{
 			{
@@ -203,9 +282,6 @@ func (r *Runner) runVariableAvailableCapacitySingleFlow() error {
 			},
 		},
 	}
-	r.runNetworkSimulation(path, nm)
-
-	return nil
 }
 
 func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
@@ -220,26 +296,58 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 		return fmt.Errorf("mkdir data: %w", err)
 	}
 
+	if r.senderMode == videoFileEncoderMode {
+		return r.runVideoFileMultipleFlows(nm, dataDir)
+	}
+
+	return r.runStandardMultipleFlows(nm, dataDir)
+}
+
+func (r *Runner) runVideoFileMultipleFlows(nm *NetworkManager, dataDir string) error {
+	videoFiles := r.convertToVideoFileInfo()
+
 	for i := 0; i < 2; i++ {
-		flow, err := NewSimpleFlow(r.loggerFactory, nm, i, r.senderMode, dataDir)
-		defer func(flow Flow) {
-			err = flow.Close()
-			if err != nil {
-				r.logger.Errorf("flow close: %v", err)
-			}
-		}(flow)
+		flow, err := NewSimpleFlow(r.loggerFactory, nm, i, r.senderMode, dataDir, videoFiles...)
+		if err != nil {
+			return fmt.Errorf("setup simple flow %d: %w", i, err)
+		}
+
+		defer r.closeFlow(flow)
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		go func() {
-			err = flow.sender.sender.Start(ctx)
-			if err != nil {
-				r.logger.Errorf("sender start: %v", err)
-			}
-		}()
+
+		r.startSender(ctx, flow)
 	}
 
-	path := pathCharacteristics{
+	r.runNetworkSimulation(nm)
+
+	return nil
+}
+
+func (r *Runner) runStandardMultipleFlows(nm *NetworkManager, dataDir string) error {
+	for i := 0; i < 2; i++ {
+		flow, err := NewSimpleFlow(r.loggerFactory, nm, i, r.senderMode, dataDir)
+		if err != nil {
+			return fmt.Errorf("setup simple flow %d: %w", i, err)
+		}
+
+		defer r.closeFlow(flow)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		r.startSender(ctx, flow)
+	}
+
+	r.setMultipleFlowsPathCharacteristics()
+	r.runNetworkSimulation(nm)
+
+	return nil
+}
+
+func (r *Runner) setMultipleFlowsPathCharacteristics() {
+	r.pathCharacteristics = pathCharacteristics{
 		referenceCapacity: 1 * vnet.MBit,
 		phases: []phase{
 			{
@@ -247,7 +355,6 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 				capacityRatio: 2.0,
 				maxBurst:      160 * vnet.KBit,
 			},
-
 			{
 				duration:      25 * time.Second,
 				capacityRatio: 1.0,
@@ -270,31 +377,19 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 			},
 		},
 	}
-	r.runNetworkSimulation(path, nm)
-
-	return nil
 }
 
-// pathCharacteristics defines the network characteristics for the test.
-type pathCharacteristics struct {
-	referenceCapacity int
-	phases            []phase
-}
-
-// phase defines a single phase of the network simulation with specific characteristics.
-type phase struct {
-	duration      time.Duration
-	capacityRatio float64
-	maxBurst      int
-}
-
-func (r *Runner) runNetworkSimulation(c pathCharacteristics, nm *NetworkManager) {
-	for _, phase := range c.phases {
+func (r *Runner) runNetworkSimulation(nm *NetworkManager) {
+	for _, phase := range r.pathCharacteristics.phases {
 		r.logger.Infof("enter next phase: %v", phase)
 		nm.SetCapacity(
-			int(float64(c.referenceCapacity)*phase.capacityRatio),
+			int(float64(r.pathCharacteristics.referenceCapacity)*phase.capacityRatio),
 			phase.maxBurst,
 		)
+		nm.SetDataDelay(phase.dataDelay)
+		nm.SetAckDelay(phase.ackDelay)
+		nm.SetDataLossRate(phase.dataLossRate)
+		nm.SetAckLossRate(phase.ackLossRate)
 		time.Sleep(phase.duration)
 	}
 }

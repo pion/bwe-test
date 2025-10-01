@@ -22,9 +22,22 @@ real-time media described in [RFC8867](https://www.rfc-editor.org/rfc/rfc8867.ht
 ### Implemented/Planned Test Cases and Applications
 The current implementation uses [`vnet.Net` from
 pion/transport](https://github.com/pion/transport) to simulate network
-constraints. There are two test applications, one using a simple simulcast-like
-setup and the other one using adaptive bitrate streaming with a synthetic
-encoder.
+constraints. There are three test applications:
+
+1. **Simulcast-like setup** - Uses a simple simulcast configuration
+2. **Adaptive bitrate streaming** - Uses synthetic encoder for adaptive bitrate
+3. **Video file reader** - Reads numbered JPG image files and sends them as video frames
+
+#### Video File Reader
+The video file reader (`VideoFileReader`) reads series of numbered JPG image files 
+(e.g., `frame_000.jpg`, `frame_001.jpg`, etc.) from a directory and sends them as 
+individual video frames using an `RTCSender`. This allows testing with real video 
+content while maintaining precise control over frame timing and network conditions.
+
+To use the video file reader test:
+- Create directories with numbered JPG files (e.g., `../sample_videos_0/`, `../sample_videos_1/`)
+- Files should be named with sequential numbers (frame_000.jpg, frame_001.jpg, etc.)
+- The reader automatically discovers, sorts, and cycles through the frames
 
 To run the simulcast test, you must create three input video files as described
 in the [bandwidth-esimation-from-disk
@@ -33,6 +46,7 @@ and place them in the `vnet` directory.
 
 - [ ] **Variable Available Capacity with a Single Flow**
 - [ ] **Variable Available Capacity with Multiple Flows**
+- [x] **Dual Video Tracks with Variable Available Capacity** - Uses video file reader with multiple video tracks
 - [ ] **Congested Feedback Link with Bi-directional Media Flows**
 - [ ] **Competing Media Flows with the Same Congestion Control Algorithm**
 - [ ] **Round Trip Time Fairness**
@@ -52,6 +66,37 @@ interface. In future, we might automate the evaluation.
 
 ### Running
 To run the tests, run `go test -v ./vnet/`.
+
+To run the main test application with all test cases (including the video file reader test):
+```bash
+cd vnet
+go run .
+```
+
+The application will run multiple test scenarios including:
+- ABR (Adaptive Bitrate) tests with single and multiple flows
+- Simulcast tests with single and multiple flows  
+- Video file reader test with dual video tracks (requires sample video directories)
+
+#### Video File Reader Test Requirements
+
+**Dependencies:**
+- Test depends on libvpx-dev library. The procedure to install the library on linux machine is:
+  ```bash
+  sudo apt-get update
+  sudo apt-get install -y libvpx-dev pkg-config
+  ```
+
+**Video Preparation:**
+- User needs to first decode two videos into sequenced jpg files and put the files under `sample_videos_0` and `sample_videos_1` directories
+- The command to use ffmpeg to decode the video is as follows:
+  ```bash
+  mkdir -p sample_videos_0
+  ffmpeg -i /path/to/input/video0.mp4 -vsync 0 sample_videos_0/frame_%04d.jpg
+  
+  mkdir -p sample_videos_1
+  ffmpeg -i /path/to/input/video1.mp4 -vsync 0 sample_videos_1/frame_%04d.jpg
+  ```
 
 ### Roadmap
 The library is used as a part of our WebRTC implementation. Please refer to that [roadmap](https://github.com/pion/webrtc/issues/9) to track our major milestones.
