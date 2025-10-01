@@ -1,0 +1,28 @@
+[
+    {
+        "DurationSeconds": 25,
+        "CapacityRatio": 2.0,
+        "MaxBurstKbps": 160
+    },
+    {
+        "DurationSeconds": 25,
+        "CapacityRatio": 1.0,
+        "MaxBurstKbps": 160,
+        "DataLossRate": 50
+    },
+    {
+        "DurationSeconds": 25,
+        "CapacityRatio": 1.75,
+        "MaxBurstKbps": 160
+    },
+    {
+        "DurationSeconds": 25,
+        "CapacityRatio": 0.5,
+        "MaxBurstKbps": 160
+    },
+    {
+        "DurationSeconds": 25,
+        "CapacityRatio": 1.0,
+        "MaxBurstKbps": 160
+    }
+]

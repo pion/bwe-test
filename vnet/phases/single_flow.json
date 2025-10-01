@@ -1,0 +1,22 @@
+[
+    {
+        "DurationSeconds": 40,
+        "CapacityRatio": 1.0,
+        "MaxBurstKbps": 160
+    },
+    {
+        "DurationSeconds": 20,
+        "CapacityRatio": 2.5,
+        "MaxBurstKbps": 160
+    },
+    {
+        "DurationSeconds": 20,
+        "CapacityRatio": 0.5,
+        "MaxBurstKbps": 160
+    },
+    {
+        "DurationSeconds": 20,
+        "CapacityRatio": 1.0,
+        "MaxBurstKbps": 160
+    }
+]
