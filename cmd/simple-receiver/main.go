@@ -37,7 +37,7 @@ func main() {
 	// Ensure the directory exists
 	outputDir := filepath.Dir(outputPath + "_dummy") // Get directory part
 
-	if err := os.MkdirAll(outputDir, 0750); err != nil {
+	if err := os.MkdirAll(outputDir, 0o750); err != nil {
 		log.Fatalf("Failed to create output directory %s: %v", outputDir, err)
 	}
 
