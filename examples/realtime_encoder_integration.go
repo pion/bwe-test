@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
+// SPDX-License-Identifier: MIT
+
 // Package main provides an example of integrating real-time frame pushing with BWE testing using RTCSender.
 package main
 
