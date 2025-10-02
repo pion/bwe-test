@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
+# SPDX-License-Identifier: MIT
+
 # Base directory for the dual video tracks
 BASE_DIR="vnet/data/TestVnetRunnerDualVideoTracks/VariableAvailableCapacitySingleFlow/received_video"
 
