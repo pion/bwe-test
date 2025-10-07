@@ -306,7 +306,7 @@ func (r *Runner) runVariableAvailableCapacityMultipleFlows() error {
 func (r *Runner) runVideoFileMultipleFlows(nm *NetworkManager, dataDir string) error {
 	videoFiles := r.convertToVideoFileInfo()
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		flow, err := NewSimpleFlow(r.loggerFactory, nm, i, r.senderMode, dataDir, videoFiles...)
 		if err != nil {
 			return fmt.Errorf("setup simple flow %d: %w", i, err)
@@ -326,7 +326,7 @@ func (r *Runner) runVideoFileMultipleFlows(nm *NetworkManager, dataDir string) e
 }
 
 func (r *Runner) runStandardMultipleFlows(nm *NetworkManager, dataDir string) error {
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		flow, err := NewSimpleFlow(r.loggerFactory, nm, i, r.senderMode, dataDir)
 		if err != nil {
 			return fmt.Errorf("setup simple flow %d: %w", i, err)

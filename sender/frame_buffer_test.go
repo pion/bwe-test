@@ -103,7 +103,7 @@ func TestFrameBuffer_BufferFull(t *testing.T) {
 	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
 
 	// Send more frames than buffer capacity
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		err := fb.SendFrame(testImg)
 		// Should not error - it should drop oldest frames
 		assert.NoError(t, err)
@@ -175,7 +175,7 @@ func TestFrameBuffer_ConcurrentAccess(t *testing.T) {
 	go func() {
 		defer func() { done <- true }()
 		testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			_ = fb.SendFrame(testImg)
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -184,7 +184,7 @@ func TestFrameBuffer_ConcurrentAccess(t *testing.T) {
 	// Reader goroutine
 	go func() {
 		defer func() { done <- true }()
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			img, release, err := fb.Read()
 			if err == nil && img != nil {
 				release()

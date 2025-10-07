@@ -116,7 +116,7 @@ func TestVideoFileReader_LoadFrame(t *testing.T) {
 	}
 
 	// Test loading each frame
-	for i := 0; i < len(imageFiles); i++ {
+	for i := range imageFiles {
 		img, err := reader.loadFrame(i)
 		require.NoError(t, err, "Failed to load frame %d", i)
 		require.NotNil(t, img, "Frame %d should not be nil", i)
@@ -168,7 +168,7 @@ func TestVideoFileReader_Integration(t *testing.T) {
 
 	// Create a sequence of test frames
 	numFrames := 5
-	for i := 0; i < numFrames; i++ {
+	for i := range numFrames {
 		framePath := filepath.Join(tempDir, fmt.Sprintf("frame_%03d.jpg", i+1))
 		// Create frames with different colors to verify they're being read
 		col := color.RGBA{uint8((i * 50) % 256), uint8((255 - i*50) % 256), 100, 255} //nolint:gosec // Safe modulo operation
@@ -191,7 +191,7 @@ func TestVideoFileReader_Integration(t *testing.T) {
 	}
 
 	// Test loading a few frames
-	for i := 0; i < minimum(3, len(imageFiles)); i++ {
+	for i := 0; i < min(3, len(imageFiles)); i++ {
 		img, err := reader.loadFrame(i)
 		require.NoError(t, err, "Failed to load frame %d", i)
 		require.NotNil(t, img, "Frame %d should not be nil", i)
@@ -264,8 +264,8 @@ func createTestImage(width, height int, col color.RGBA) image.Image {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 
 	// Fill with solid color
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			img.Set(x, y, col)
 		}
 	}
@@ -279,8 +279,8 @@ func createTestYCbCrImage(width, height int) *image.YCbCr {
 	img := image.NewYCbCr(image.Rect(0, 0, width, height), image.YCbCrSubsampleRatio420)
 
 	// Fill with random YCbCr data
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
+	for y := range height {
+		for x := range width {
 			// Generate pseudo-random values based on position for deterministic testing
 			// Y component (luminance): 16-235 range for valid YCbCr
 			yVal := uint8((16 + (x+y)%220) % 256) //nolint:gosec // Safe modulo operation
@@ -296,15 +296,6 @@ func createTestYCbCrImage(width, height int) *image.YCbCr {
 	}
 
 	return img
-}
-
-// Helper function for minimum (Go 1.21 doesn't have built-in min for int).
-func minimum(a, b int) int {
-	if a < b {
-		return a
-	}
-
-	return b
 }
 
 // isValidTestFile validates that the file path is safe for test files.

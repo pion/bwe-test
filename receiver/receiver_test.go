@@ -379,7 +379,7 @@ func TestReceiver_FinalCoveragePush(t *testing.T) {
 	assert.NoError(t, err, "NewReceiver() with DefaultInterceptors should not error")
 
 	// Test setupVP8Processing multiple times
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		trackInfo := &trackInfo{
 			identifier: "track-" + string(rune(i+'1')),
 			isVideo:    true,
@@ -394,7 +394,7 @@ func TestReceiver_FinalCoveragePush(t *testing.T) {
 
 	// Test createOutputFile with various valid scenarios
 	receiver.outputBasePath = "valid_test_output"
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		receiver.createOutputFile("valid-track-" + string(rune(i+'1')))
 	}
 
