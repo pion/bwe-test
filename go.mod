@@ -2,7 +2,7 @@ module github.com/pion/bwe-test
 
 go 1.24
 
-toolchain go1.25.1
+toolchain go1.25.2
 
 require (
 	github.com/bamiaux/rez v0.0.0-20170731184118-29f4463c688b
