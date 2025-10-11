@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
+# SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
 # SPDX-License-Identifier: MIT
 
 # Base directory for the dual video tracks
@@ -19,21 +19,21 @@ process_track() {
     local input_ivf="$1"
     local output_mp4="$2"
     local track_name="$3"
-    
+
     echo "Processing $track_name..."
-    
+
     # Create temp directory for this track
     local temp_dir="temp_frames_${track_name}"
     mkdir -p "$temp_dir"
-    
+
     echo "Step 1: Extracting frames from $input_ivf..."
     # Extract frames without respecting timestamps (treating them as a sequence)
     ffmpeg -i "$input_ivf" -vsync 0 "$temp_dir/frame_%04d.png" 2>/dev/null
-    
+
     # Count the number of frames
     local frame_count=$(ls "$temp_dir" 2>/dev/null | wc -l)
     echo "Extracted $frame_count frames for $track_name"
-    
+
     if [ $frame_count -gt 0 ]; then
         echo "Step 2: Creating new video from frames at 30fps for $track_name..."
         # Create a new video from the frames at 30fps
@@ -42,7 +42,7 @@ process_track() {
     else
         echo "No frames found for $track_name in $input_ivf"
     fi
-    
+
     # Remove temporary files
     rm -rf "$temp_dir"
 }
@@ -76,4 +76,4 @@ if [ -f "$OUTPUT_MP4_TRACK1" ]; then
 fi
 if [ -f "$OUTPUT_MP4_TRACK2" ]; then
     echo " Track 2: $OUTPUT_MP4_TRACK2"
-fi 
+fi
