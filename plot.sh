@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025 The Pion community <https://pion.ly>
+# SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
 # SPDX-License-Identifier: MIT
 
 set -x
@@ -7,7 +7,7 @@ OUT_DIR="./out"
 IMPLEMENTATIONS=(TestVnetRunnerABR TestVnetRunnerSimulcast)
 
 for i in "${IMPLEMENTATIONS[@]}";
-do 
+do
 	RUN="$i/VariableAvailableCapacitySingleFlow"
 	DIR="./vnet/data/$i/VariableAvailableCapacitySingleFlow"
 	OUT="$OUT_DIR/$RUN"
