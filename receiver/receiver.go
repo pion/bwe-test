@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/pion/interceptor"
@@ -37,16 +38,27 @@ type Receiver struct {
 
 	log logging.LeveledLogger
 
+	// Mutex to protect concurrent access to maps
+	mu sync.RWMutex
+
 	outputBasePath string                           // Base path for output files
 	videoWriters   *map[string]io.WriteCloser       // Writers for each track, indexed by track identifier
 	ivfWriters     *map[string]*ivfwriter.IVFWriter // Pion's IVF writers for each track, indexed by track identifier
 	trackCounter   int                              // Counter for naming tracks
+
+	// VP8 frame processing support
+	enableVP8Decode     bool                           // Whether to enable VP8 decoding
+	vp8DecodePath       string                         // Output path for decoded frames
+	vp8Processors       *map[string]*VP8FrameProcessor // VP8 frame processors for each track
+	mp4OutputPath       string                         // Output path for MP4 file
+	videoWriterCallback VideoWriterCallback            // Callback for video writing
 }
 
 // NewReceiver creates a new WebRTC receiver with the given options.
 func NewReceiver(opts ...Option) (*Receiver, error) {
 	videoWritersMap := make(map[string]io.WriteCloser)
 	ivfWritersMap := make(map[string]*ivfwriter.IVFWriter)
+	vp8ProcessorsMap := make(map[string]*VP8FrameProcessor)
 
 	receiver := &Receiver{
 		settingEngine:  &webrtc.SettingEngine{},
@@ -58,6 +70,12 @@ func NewReceiver(opts ...Option) (*Receiver, error) {
 		videoWriters:   &videoWritersMap,
 		ivfWriters:     &ivfWritersMap,
 		trackCounter:   0,
+		// Initialize VP8 frame processing fields
+		enableVP8Decode:     false,
+		vp8DecodePath:       "",
+		vp8Processors:       &vp8ProcessorsMap,
+		mp4OutputPath:       "",
+		videoWriterCallback: nil,
 	}
 	if err := receiver.mediaEngine.RegisterDefaultCodecs(); err != nil {
 		return nil, err
@@ -72,24 +90,52 @@ func NewReceiver(opts ...Option) (*Receiver, error) {
 }
 
 // Close stops and cleans up the receiver.
-func (r *Receiver) Close() error {
-	// Close IVF writers if they exist
-	if r.ivfWriters != nil {
-		for _, ivfWriter := range *r.ivfWriters {
-			if err := ivfWriter.Close(); err != nil {
-				r.log.Errorf("Failed to close IVF writer: %v", err)
-			}
-		}
+// closeIVFWriters closes all IVF writers.
+func (r *Receiver) closeIVFWriters() {
+	if r.ivfWriters == nil {
+		return
 	}
 
-	// Close video writers if they exist
-	if r.videoWriters != nil {
-		for trackID, videoWriter := range *r.videoWriters {
+	for _, ivfWriter := range *r.ivfWriters {
+		if err := ivfWriter.Close(); err != nil {
+			r.log.Errorf("Failed to close IVF writer: %v", err)
+		}
+	}
+}
+
+// closeVideoWriters closes video writers that don't have associated IVF writers.
+func (r *Receiver) closeVideoWriters() {
+	if r.videoWriters == nil {
+		return
+	}
+
+	for trackID, videoWriter := range *r.videoWriters {
+		// Only close if there's no IVF writer for this track
+		if (*r.ivfWriters)[trackID] == nil {
 			if err := videoWriter.Close(); err != nil {
 				r.log.Errorf("Failed to close video writer for track %s: %v", trackID, err)
 			}
 		}
 	}
+}
+
+// closeVP8Processors closes all VP8 frame processors.
+func (r *Receiver) closeVP8Processors() {
+	if r.vp8Processors == nil {
+		return
+	}
+
+	for trackID, processor := range *r.vp8Processors {
+		if err := processor.Close(); err != nil {
+			r.log.Errorf("Failed to close VP8 frame processor for track %s: %v", trackID, err)
+		}
+	}
+}
+
+func (r *Receiver) Close() error {
+	r.closeIVFWriters()
+	r.closeVideoWriters()
+	r.closeVP8Processors()
 
 	return r.peerConnection.Close()
 }
@@ -195,13 +241,17 @@ func (r *Receiver) setupTrackInfo(trackRemote *webrtc.TrackRemote) *trackInfo {
 	isVP8 := isVideo && trackRemote.Codec().MimeType == webrtc.MimeTypeVP8
 
 	// Use track counter for consistent naming instead of WebRTC-generated ID
+	r.mu.Lock()
 	r.trackCounter++
 	trackIdentifier := fmt.Sprintf("track-%d", r.trackCounter)
+	r.mu.Unlock()
 
 	// Create separate output file for this track if base path is provided
+	r.mu.Lock()
 	if r.outputBasePath != "" && isVP8 && (*r.videoWriters)[trackIdentifier] == nil {
 		r.createOutputFile(trackIdentifier)
 	}
+	r.mu.Unlock()
 
 	return &trackInfo{
 		identifier: trackIdentifier,
@@ -363,22 +413,38 @@ func (r *Receiver) processPackets(ctx context.Context, trackRemote *webrtc.Track
 func (r *Receiver) processVP8Packet(packet *rtp.Packet, trackInfo *trackInfo, frameAssembler *VP8FrameAssembler,
 	stats *trackStats,
 ) {
+	// Get video writer with lock
+	r.mu.RLock()
+	videoWriter := (*r.videoWriters)[trackInfo.identifier]
+	ivfWriter := (*r.ivfWriters)[trackInfo.identifier]
+	r.mu.RUnlock()
+
 	// Only process if we have a video writer for this track
-	if (*r.videoWriters)[trackInfo.identifier] == nil {
+	if videoWriter == nil {
 		return
 	}
 
 	// Initialize IVF writer if needed
-	if (*r.ivfWriters)[trackInfo.identifier] == nil {
+	if ivfWriter == nil {
 		if err := r.initializeIVFWriter(trackInfo.identifier); err != nil {
 			r.log.Errorf("Failed to create IVF writer: %v", err)
 
 			return
 		}
+		r.mu.RLock()
+		ivfWriter = (*r.ivfWriters)[trackInfo.identifier]
+		r.mu.RUnlock()
 	}
 
 	// Write RTP packet directly to IVF using Pion's writer
-	r.writeRTPToFile(trackInfo.identifier, packet, stats)
+	if ivfWriter != nil {
+		if err := ivfWriter.WriteRTP(packet); err != nil {
+			r.log.Errorf("Failed to write RTP packet to IVF: %v", err)
+		} else {
+			r.log.Debugf("Wrote RTP packet to IVF: size=%d, timestamp=%d",
+				len(packet.Payload), packet.Timestamp)
+		}
+	}
 
 	// Also process frames for potential decoder integration
 	frameReady, frameData, isKeyFrame, timestamp := frameAssembler.ProcessPacket(packet)
@@ -389,12 +455,95 @@ func (r *Receiver) processVP8Packet(packet *rtp.Packet, trackInfo *trackInfo, fr
 			r.log.Infof("Assembled VP8 keyframe: size=%d, timestamp=%d, elapsed=%v",
 				len(frameData), timestamp, elapsedTime)
 		}
-		// frameData can be used for decoder.Decode(frameData) in the future
+		stats.framesAssembled++
+
+		// If VP8 decoding is enabled, process the frame
+		if r.enableVP8Decode {
+			r.processVP8Frame(frameData, trackInfo.identifier)
+		}
+	}
+}
+
+// createProcessorForKeyframe creates a VP8 processor for a keyframe.
+func (r *Receiver) createProcessorForKeyframe(frameData []byte, trackIdentifier string) *VP8FrameProcessor {
+	actualWidth, actualHeight, ok := ParseVP8KeyframeDimensions(frameData)
+	if !ok {
+		return nil
+	}
+
+	r.log.Infof("Track %s: detected actual dimensions %dx%d from first keyframe",
+		trackIdentifier, actualWidth, actualHeight)
+
+	newProcessor, err := NewVP8FrameProcessor(
+		actualWidth, actualHeight, trackIdentifier, r.videoWriterCallback, r.log,
+	)
+	if err != nil {
+		r.log.Errorf("Failed to create VP8 frame processor for %s: %v", trackIdentifier, err)
+
+		return nil
+	}
+
+	r.mu.Lock()
+	(*r.vp8Processors)[trackIdentifier] = newProcessor
+	r.mu.Unlock()
+
+	r.log.Infof("Created VP8 frame processor for %s with dimensions %dx%d",
+		trackIdentifier, actualWidth, actualHeight)
+
+	return newProcessor
+}
+
+// processVP8Frame decodes and processes a VP8 frame.
+func (r *Receiver) processVP8Frame(frameData []byte, trackIdentifier string) {
+	// Check if this is actually a keyframe from the clean frame data (no payload descriptors)
+	actualIsKeyframe := len(frameData) > 0 && (frameData[0]&0x01) == 0
+
+	// Get or create VP8 processor
+	r.mu.RLock()
+	processor := (*r.vp8Processors)[trackIdentifier]
+	r.mu.RUnlock()
+
+	if processor == nil && actualIsKeyframe {
+		processor = r.createProcessorForKeyframe(frameData, trackIdentifier)
+	}
+
+	if processor == nil {
+		if actualIsKeyframe {
+			r.log.Warnf("Track %s: Failed to parse dimensions from keyframe", trackIdentifier)
+		}
+
+		return
+	}
+
+	// Skip non-keyframes until we get the first keyframe
+	if !processor.HasFirstKeyFrame() && !actualIsKeyframe {
+		r.log.Infof("Track %s: skipping non-keyframe before first keyframe", trackIdentifier)
+
+		return
+	}
+
+	// Decode the frame
+	processor.Decode(frameData)
+	r.log.Infof("Track %s: decoded frame (keyframe=%v), current frame count: %d",
+		trackIdentifier, actualIsKeyframe, processor.GetFrameCount())
+
+	// Mark that we got first keyframe
+	if actualIsKeyframe && !processor.HasFirstKeyFrame() {
+		processor.SetFirstKeyFrame()
+		r.log.Infof("Got first keyframe for %s, decoder ready", trackIdentifier)
 	}
 }
 
 // initializeIVFWriter creates and initializes an IVF writer for a track.
 func (r *Receiver) initializeIVFWriter(trackIdentifier string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Check again with lock held
+	if (*r.ivfWriters)[trackIdentifier] != nil {
+		return nil
+	}
+
 	// Use Pion's IVF writer with VP8 codec
 	ivfWriter, err := ivfwriter.NewWith((*r.videoWriters)[trackIdentifier],
 		ivfwriter.WithCodec(webrtc.MimeTypeVP8))
@@ -405,19 +554,6 @@ func (r *Receiver) initializeIVFWriter(trackIdentifier string) error {
 	r.log.Infof("Created Pion IVF writer for VP8")
 
 	return nil
-}
-
-// writeRTPToFile writes an RTP packet to the IVF file using Pion's writer.
-func (r *Receiver) writeRTPToFile(
-	trackIdentifier string, packet *rtp.Packet, stats *trackStats,
-) {
-	if err := (*r.ivfWriters)[trackIdentifier].WriteRTP(packet); err != nil {
-		r.log.Errorf("Failed to write RTP packet to IVF: %v", err)
-	} else {
-		stats.framesAssembled++
-		r.log.Debugf("Wrote RTP packet to IVF: size=%d, timestamp=%d",
-			len(packet.Payload), packet.Timestamp)
-	}
 }
 
 // SDPHandler returns an HTTP handler for WebRTC signaling.

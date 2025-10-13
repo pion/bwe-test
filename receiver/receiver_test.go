@@ -49,18 +49,25 @@ func TestReceiver_Close(t *testing.T) {
 	err = receiver.SetupPeerConnection()
 	assert.NoError(t, err, "SetupPeerConnection() should not error")
 
-	// Add some mock writers to test cleanup
-	mockWriter := &mockWriteCloser{}
-	(*receiver.videoWriters)["test-track"] = mockWriter
+	// Add a mock writer with IVF writer (should not be closed directly)
+	mockWriterWithIVF := &mockWriteCloser{}
+	(*receiver.videoWriters)["track-with-ivf"] = mockWriterWithIVF
 
 	mockIVFWriter, err := ivfwriter.NewWith(&mockWriteCloser{}, ivfwriter.WithCodec("video/VP8"))
 	assert.NoError(t, err, "NewIVFWriter() should not error")
-	(*receiver.ivfWriters)["test-track"] = mockIVFWriter
+	(*receiver.ivfWriters)["track-with-ivf"] = mockIVFWriter
+
+	// Add a mock writer without IVF writer (should be closed)
+	mockWriterWithoutIVF := &mockWriteCloser{}
+	(*receiver.videoWriters)["track-without-ivf"] = mockWriterWithoutIVF
 
 	err = receiver.Close()
 	assert.NoError(t, err, "Close() should not error")
 
-	assert.True(t, mockWriter.closed, "Close() should have closed video writer")
+	assert.True(t, mockWriterWithoutIVF.closed,
+		"Close() should have closed video writer without IVF writer")
+	assert.False(t, mockWriterWithIVF.closed,
+		"Close() should not close video writer with IVF writer (IVF writer closes it)")
 }
 
 func TestReceiver_SetupPeerConnection(t *testing.T) {
@@ -104,15 +111,26 @@ func TestReceiver_InitializeIVFWriter(t *testing.T) {
 	assert.NotNil(t, (*receiver.ivfWriters)["test-track"], "initializeIVFWriter() should have created IVF writer")
 }
 
-func TestReceiver_WriteRTPToFile(t *testing.T) {
+func TestReceiver_ProcessVP8Packet(t *testing.T) {
 	receiver, err := NewReceiver()
 	assert.NoError(t, err, "NewReceiver() should not error")
 
-	// Setup IVF writer
+	// Setup video writer and IVF writer
 	buf := &mockWriteCloser{}
+	(*receiver.videoWriters)["test-track"] = buf
+
 	ivfWriter, err := ivfwriter.NewWith(buf, ivfwriter.WithCodec("video/VP8"))
 	assert.NoError(t, err, "NewIVFWriter() should not error")
 	(*receiver.ivfWriters)["test-track"] = ivfWriter
+
+	// Setup track info and frame assembler
+	trackInfo := &trackInfo{
+		identifier: "test-track",
+		isVideo:    true,
+		isVP8:      true,
+	}
+	frameAssembler := NewVP8FrameAssembler(receiver.log)
+	stats := &trackStats{startTime: time.Now()}
 
 	// Test writing RTP packets
 	packet := &rtp.Packet{
@@ -126,17 +144,16 @@ func TestReceiver_WriteRTPToFile(t *testing.T) {
 		},
 		Payload: []byte{0x10, 0x02, 0x00, 0x9d, 0x01, 0x2a}, // VP8 keyframe
 	}
-	stats := &trackStats{startTime: time.Now()}
 
-	receiver.writeRTPToFile("test-track", packet, stats)
+	receiver.processVP8Packet(packet, trackInfo, frameAssembler, stats)
 
-	assert.Equal(t, 1, stats.framesAssembled, "writeRTPToFile() should increment framesAssembled to 1")
+	assert.Equal(t, 1, stats.framesAssembled, "processVP8Packet() should increment framesAssembled to 1")
 
-	// Test writing another packet
+	// Test writing another packet (with marker bit set to complete the frame)
 	packet2 := &rtp.Packet{
 		Header: rtp.Header{
 			Version:        2,
-			Marker:         false,
+			Marker:         true, // Set marker to complete the frame
 			PayloadType:    96,
 			SequenceNumber: 2,
 			Timestamp:      2000,
@@ -145,9 +162,9 @@ func TestReceiver_WriteRTPToFile(t *testing.T) {
 		Payload: []byte{0x10, 0x01, 0x9d, 0x01, 0x2a}, // VP8 non-keyframe
 	}
 
-	receiver.writeRTPToFile("test-track", packet2, stats)
+	receiver.processVP8Packet(packet2, trackInfo, frameAssembler, stats)
 
-	assert.Equal(t, 2, stats.framesAssembled, "writeRTPToFile() framesAssembled should be 2 after second packet")
+	assert.Equal(t, 2, stats.framesAssembled, "processVP8Packet() framesAssembled should be 2 after second packet")
 }
 
 // Mock implementation for testing.

@@ -195,3 +195,44 @@ func (d *VP8Depayloader) GetFrame() ([]byte, bool, uint32) {
 func (d *VP8Depayloader) FlushFrame() ([]byte, bool, uint32) {
 	return d.GetFrame()
 }
+
+// isVP8KeyframeWithValidStartCode checks if frame is a keyframe with valid start code.
+func isVP8KeyframeWithValidStartCode(frameData []byte) bool {
+	if len(frameData) < 10 {
+		return false
+	}
+
+	// Check if this is a keyframe (P bit = 0)
+	if (frameData[0] & 0x01) != 0 {
+		return false
+	}
+
+	// Check start code (0x9d 0x01 0x2a)
+	return frameData[3] == 0x9d && frameData[4] == 0x01 && frameData[5] == 0x2a
+}
+
+// extractAndValidateDimensions extracts and validates dimensions from VP8 frame.
+func extractAndValidateDimensions(frameData []byte) (int, int, bool) {
+	// Extract width (14 bits, little endian)
+	width := int(frameData[6]) | (int(frameData[7]&0x3f) << 8)
+
+	// Extract height (14 bits, little endian)
+	height := int(frameData[8]) | (int(frameData[9]&0x3f) << 8)
+
+	// Sanity check dimensions
+	if width <= 0 || height <= 0 || width > 4096 || height > 4096 {
+		return 0, 0, false
+	}
+
+	return width, height, true
+}
+
+// ParseVP8KeyframeDimensions extracts width and height from a VP8 keyframe.
+// Returns width, height, and whether parsing was successful.
+func ParseVP8KeyframeDimensions(frameData []byte) (int, int, bool) {
+	if !isVP8KeyframeWithValidStartCode(frameData) {
+		return 0, 0, false
+	}
+
+	return extractAndValidateDimensions(frameData)
+}
