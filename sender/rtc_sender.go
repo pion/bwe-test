@@ -21,6 +21,7 @@ import (
 	"github.com/pion/logging"
 	"github.com/pion/mediadevices"
 	"github.com/pion/mediadevices/pkg/codec"
+	"github.com/pion/mediadevices/pkg/codec/vpx"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
 )
@@ -35,6 +36,7 @@ var (
 	ErrInvalidNegativeValue        = errors.New("invalid value: must be non-negative")
 	ErrAllocationSumMustBePositive = errors.New("sum of allocation values must be greater than 0")
 	ErrFailedToCastVideoTrack      = errors.New("failed to cast media track to VideoTrack")
+	ErrMissingEncoderConfig        = errors.New("either EncoderBuilder or InitialBitrate must be provided")
 )
 
 // VideoTrackInfo holds information about a video track.
@@ -43,6 +45,7 @@ type VideoTrackInfo struct {
 	Width          int
 	Height         int
 	EncoderBuilder codec.VideoEncoderBuilder
+	InitialBitrate int // Optional: if EncoderBuilder is nil, a default VP8 encoder with this bitrate will be created
 }
 
 // EncodedTrack represents an encoded video track.
@@ -143,6 +146,25 @@ func (s *RTCSender) setupGCC(initialBitrate int) error {
 	return nil
 }
 
+// getOrCreateEncoderBuilder returns the encoder builder from info or creates a default VP8 encoder.
+func getOrCreateEncoderBuilder(info VideoTrackInfo) (codec.VideoEncoderBuilder, error) {
+	if info.EncoderBuilder != nil {
+		return info.EncoderBuilder, nil
+	}
+
+	if info.InitialBitrate > 0 {
+		params, err := vpx.NewVP8Params()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create default VP8 encoder: %w", err)
+		}
+		params.BitRate = info.InitialBitrate
+
+		return &params, nil
+	}
+
+	return nil, fmt.Errorf("%w for track %s", ErrMissingEncoderConfig, info.TrackID)
+}
+
 // AddVideoTrack adds a new video track.
 func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 	s.tracksMu.Lock()
@@ -152,9 +174,14 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 		return fmt.Errorf("%w: %s", ErrTrackAlreadyExists, info.TrackID)
 	}
 
-	// Create codec selector with the provided encoder builder
+	encoderBuilder, err := getOrCreateEncoderBuilder(info)
+	if err != nil {
+		return err
+	}
+
+	// Create codec selector with the encoder builder
 	codecSelector := mediadevices.NewCodecSelector(
-		mediadevices.WithVideoEncoders(info.EncoderBuilder),
+		mediadevices.WithVideoEncoders(encoderBuilder),
 	)
 
 	// Create frame buffer for this track
@@ -164,7 +191,7 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 	mediaTrack := mediadevices.NewVideoTrack(frameSource, codecSelector)
 
 	// Create encoded reader
-	mimeType := info.EncoderBuilder.RTPCodec().MimeType
+	mimeType := encoderBuilder.RTPCodec().MimeType
 	encodedReader, err := mediaTrack.NewEncodedReader(mimeType)
 	if err != nil {
 		return err
@@ -346,6 +373,46 @@ func (s *RTCSender) Start(ctx context.Context) error {
 	}
 }
 
+// calculateTrackBitrate calculates the bitrate for a track based on allocation.
+func (s *RTCSender) calculateTrackBitrate(trackID string, targetBitrate, equalShare int, useCustomAllocation bool) int {
+	if !useCustomAllocation {
+		return equalShare
+	}
+
+	percentage, exists := s.bitrateAllocation[trackID]
+	if !exists || percentage < 1e-6 {
+		return 0
+	}
+
+	return int(float64(targetBitrate) * percentage)
+}
+
+// updateEncoderBitrate updates the encoder controller for a track.
+func updateEncoderBitrate(track *EncodedTrack, currentBitrate, targetBitrate int) bool {
+	// Try QPController first (standard pion mediadevices)
+	if qpController, ok := track.encodedReader.Controller().(codec.QPController); ok && qpController != nil {
+		_ = qpController.DynamicQPControl(currentBitrate, targetBitrate)
+
+		return true
+	}
+
+	// Try generic interface with SetBitrate method (for forks/custom implementations)
+	controller := track.encodedReader.Controller()
+	if controller == nil {
+		return false
+	}
+
+	if setBitrateMethod, ok := any(controller).(interface {
+		SetBitrate(int, int)
+	}); ok {
+		setBitrateMethod.SetBitrate(currentBitrate, targetBitrate)
+
+		return true
+	}
+
+	return false
+}
+
 // updateBitrate updates bitrate for all tracks.
 func (s *RTCSender) updateBitrate(targetBitrate int) {
 	s.tracksMu.RLock()
@@ -359,29 +426,14 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 	equalShare := targetBitrate / len(s.tracks)
 
 	for trackID, track := range s.tracks {
-		// Get encoder controller
-		controller, ok := track.encodedReader.Controller().(codec.QPController)
-		if !ok || controller == nil {
-			s.log.Warnf("No encoder controller for track %s", track.info.TrackID)
-
+		trackBitrate := s.calculateTrackBitrate(trackID, targetBitrate, equalShare, useCustomAllocation)
+		if trackBitrate <= 0 {
 			continue
 		}
 
-		var trackBitrate int
-		if useCustomAllocation {
-			if percentage, exists := s.bitrateAllocation[trackID]; exists && percentage > 1e-6 {
-				trackBitrate = int(float64(targetBitrate) * percentage)
-			} else {
-				trackBitrate = 0
-			}
-			// Note: tracks not in allocation map get 0 bitrate
-		} else {
-			trackBitrate = equalShare
-		}
-		if trackBitrate > 0 {
-			currentBitrate := int(track.bitrateTracker.GetBitrate())
-			// Actually update the encoder
-			_ = controller.DynamicQPControl(currentBitrate, trackBitrate)
+		currentBitrate := int(track.bitrateTracker.GetBitrate())
+		if !updateEncoderBitrate(track, currentBitrate, trackBitrate) {
+			s.log.Warnf("No compatible encoder controller for track %s", track.info.TrackID)
 		}
 	}
 
