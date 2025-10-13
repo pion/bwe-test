@@ -14,6 +14,7 @@
 bin/
 vendor/
 node_modules/
+data/
 
 ### Files ###
 #############
@@ -26,3 +27,14 @@ cover.out
 examples/sfu-ws/cert.pem
 examples/sfu-ws/key.pem
 wasm_exec.js
+bwe-test
+vnet/vnet
+
+# Sample videos and generated media files
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.flv
+*.wmv

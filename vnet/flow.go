@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"image"
+
 	"github.com/pion/bwe-test/logging"
 	"github.com/pion/bwe-test/receiver"
 	"github.com/pion/bwe-test/sender"
@@ -95,6 +97,12 @@ func NewSimpleFlow(
 // Close stops the flow and cleans up all resources.
 func (f Flow) Close() error {
 	var errs []error
+
+	// Close video writers first
+	if err := GetGlobalVideoWriterManager().CloseAll(); err != nil {
+		errs = append(errs, fmt.Errorf("video writer close: %w", err))
+	}
+
 	err := f.receiver.Close()
 	if err != nil {
 		errs = append(errs, fmt.Errorf("receiver close: %w", err))
@@ -300,9 +308,51 @@ func newReceiver(
 
 	// Add video saving option if outputVideoPath is set
 	if outputVideoPath != "" {
-		// Use SaveVideo for video saving - remove .ivf extension from base path
+		// Use SaveVideo for multiple track support - remove .ivf extension from base path
 		baseOutputPath := strings.TrimSuffix(outputVideoPath, ".ivf")
 		opts = append(opts, receiver.SaveVideo(baseOutputPath))
+
+		// ALSO enable VP8 decoder with both PNG and MP4 output using single base path
+		receivedDir := filepath.Dir(outputVideoPath)
+		outputBasePath := filepath.Join(receivedDir, fmt.Sprintf("output_%d", id))
+		opts = append(opts, receiver.EnableVP8DecodeWithMP4(outputBasePath, outputBasePath))
+
+		// Pre-create video writers for both expected tracks to avoid late keyframe issues
+		videoWriterManager := GetGlobalVideoWriterManager()
+		for i := 1; i <= 2; i++ { // Assuming 2 tracks as per trackCount
+			trackID := fmt.Sprintf("track-%d", i)
+			mp4Dir := filepath.Join(outputBasePath, "mp4")
+			pngDir := filepath.Join(outputBasePath, "frames")
+			mp4Path := filepath.Join(mp4Dir, fmt.Sprintf("%s.mp4", trackID))
+			pngPath := filepath.Join(pngDir, trackID)
+
+			// Pre-create with default dimensions (will be used for both tracks)
+			width, height := 640, 480
+			fmt.Printf("Pre-creating video writer for %s: PNG=%s, MP4=%s\n", trackID, pngPath, mp4Path)
+			err := videoWriterManager.CreateWriter(trackID, pngPath, true, true, mp4Path, width, height, 15.0)
+			if err != nil {
+				fmt.Printf("Failed to pre-create video writer for %s: %v\n", trackID, err)
+			} else {
+				fmt.Printf("Successfully pre-created video writer for %s\n", trackID)
+			}
+		}
+
+		// Set up video writer callback to handle GoCV functionality
+		opts = append(opts, receiver.SetVideoWriterCallback(func(img image.Image, width, height int, isKeyFrame bool, timestamp uint64, trackID string) {
+			// Write the frame (writers are already created)
+			frameData := &FrameData{
+				Image:      img,
+				Width:      width,
+				Height:     height,
+				IsKeyFrame: isKeyFrame,
+				Timestamp:  timestamp,
+				TrackID:    trackID,
+			}
+
+			if err := GetGlobalVideoWriterManager().WriteFrame(frameData); err != nil {
+				fmt.Printf("Failed to write frame for %s: %v\n", trackID, err)
+			}
+		}))
 	}
 
 	rc, err := receiver.NewReceiver(opts...)

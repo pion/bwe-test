@@ -84,3 +84,36 @@ func SaveVideo(basePath string) Option {
 		return nil
 	}
 }
+
+// EnableVP8Decode returns an Option that configures the receiver to decode VP8 frames and save them as PNG images.
+// The outputPath should be the directory path where decoded frames will be saved (e.g., "decoded/").
+func EnableVP8Decode(outputPath string) Option {
+	return func(r *Receiver) error {
+		r.enableVP8Decode = true
+		r.vp8DecodePath = outputPath
+
+		return nil
+	}
+}
+
+// EnableVP8DecodeWithMP4 returns an Option that configures the receiver to decode VP8 frames
+// and save as both PNG images and MP4 video. Uses a single base path - subdirectories will be
+// created automatically (mp4/ and frames/).
+func EnableVP8DecodeWithMP4(basePath string, mp4BasePath string) Option {
+	return func(r *Receiver) error {
+		r.enableVP8Decode = true
+		r.vp8DecodePath = basePath
+		r.mp4OutputPath = mp4BasePath
+
+		return nil
+	}
+}
+
+// SetVideoWriterCallback returns an Option that sets the callback for video frame processing.
+func SetVideoWriterCallback(callback VideoWriterCallback) Option {
+	return func(r *Receiver) error {
+		r.videoWriterCallback = callback
+
+		return nil
+	}
+}

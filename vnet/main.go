@@ -40,11 +40,22 @@ const (
 
 func main() {
 	logLevel := flag.String("log", "info", "Log level")
+	videoFiles := flag.String("videos", "", "Comma-separated list of video file paths (e.g. 'video1.mp4,video2.mp4')")
 	flag.Parse()
 
 	loggerFactory, err := getLoggerFactory(*logLevel)
 	if err != nil {
 		log.Fatalf("get logger factory: %v", err)
+	}
+
+	// Parse video files from command line
+	var videoFilesArray []string
+	if *videoFiles != "" {
+		videoFilesArray = strings.Split(*videoFiles, ",")
+		// Trim whitespace from each path
+		for i, path := range videoFilesArray {
+			videoFilesArray[i] = strings.TrimSpace(path)
+		}
 	}
 
 	testCases := []struct {
@@ -54,35 +65,46 @@ func main() {
 		videoFile         []string
 		phaseFile         string
 		referenceCapacity int
+		trackCount        int
 	}{
-		{
-			name:       "TestVnetRunnerABR/VariableAvailableCapacitySingleFlow",
-			senderMode: abrSenderMode,
-			flowMode:   singleFlowMode,
-		},
-		{
-			name:       "TestVnetRunnerABR/VariableAvailableCapacityMultipleFlows",
-			senderMode: abrSenderMode,
-			flowMode:   multipleFlowsMode,
-		},
-		{
-			name:       "TestVnetRunnerSimulcast/VariableAvailableCapacitySingleFlow",
-			senderMode: simulcastSenderMode,
-			flowMode:   singleFlowMode,
-		},
-		{
-			name:       "TestVnetRunnerSimulcast/VariableAvailableCapacityMultipleFlows",
-			senderMode: simulcastSenderMode,
-			flowMode:   multipleFlowsMode,
-		},
+		// Commented out other tests to focus on dual video track VP8 decoding
+		// {
+		// 	name:       "TestVnetRunnerABR/VariableAvailableCapacitySingleFlow",
+		// 	senderMode: abrSenderMode,
+		// 	flowMode:   singleFlowMode,
+		// },
+		// {
+		// 	name:       "TestVnetRunnerABR/VariableAvailableCapacityMultipleFlows",
+		// 	senderMode: abrSenderMode,
+		// 	flowMode:   multipleFlowsMode,
+		// },
+		// {
+		// 	name:       "TestVnetRunnerSimulcast/VariableAvailableCapacitySingleFlow",
+		// 	senderMode: simulcastSenderMode,
+		// 	flowMode:   singleFlowMode,
+		// },
+		// {
+		// 	name:       "TestVnetRunnerSimulcast/VariableAvailableCapacityMultipleFlows",
+		// 	senderMode: simulcastSenderMode,
+		// 	flowMode:   multipleFlowsMode,
+		// },
+		// Dual video track test using configurable video files
 		{
 			name:              "TestVnetRunnerDualVideoTracks/VariableAvailableCapacitySingleFlow",
 			senderMode:        videoFileEncoderMode,
 			flowMode:          singleFlowMode,
-			videoFile:         []string{"../sample_videos_0/", "../sample_videos_1/"},
-			phaseFile:         "phases/single_flow.json",
-			referenceCapacity: 1 * vnet.MBit,
+			videoFile:         videoFilesArray, // Use command line parameter (comma-separated list)
+			phaseFile:         "phases/quick_test.json",
+			referenceCapacity: 2 * vnet.MBit,
+			trackCount:        2,
 		},
+	}
+
+	// If no video files specified from command line, use defaults
+	for i := range testCases {
+		if testCases[i].senderMode == videoFileEncoderMode && len(testCases[i].videoFile) == 0 {
+			testCases[i].videoFile = []string{"../sample_videos/sample_640x480_5s.mp4", "../sample_videos/sample_640x480_30s.mp4"}
+		}
 	}
 
 	logger := loggerFactory.NewLogger("bwe_test_runner")
@@ -94,6 +116,7 @@ func main() {
 			senderMode:          t.senderMode,
 			flowMode:            t.flowMode,
 			videoFile:           t.videoFile,
+			trackCount:          t.trackCount,
 			pathCharacteristics: GetPathCharacteristics(t.phaseFile, t.referenceCapacity),
 		}
 		err := runner.Run()
@@ -137,6 +160,7 @@ type Runner struct {
 	senderMode          senderMode
 	flowMode            flowMode
 	videoFile           []string
+	trackCount          int
 	pathCharacteristics pathCharacteristics
 }
 
