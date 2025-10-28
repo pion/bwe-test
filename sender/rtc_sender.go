@@ -427,14 +427,15 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 
 	for trackID, track := range s.tracks {
 		trackBitrate := s.calculateTrackBitrate(trackID, targetBitrate, equalShare, useCustomAllocation)
-		if trackBitrate <= 0 {
-			continue
+		
+		// Only update encoder for tracks with positive bitrate (like NuroSender)
+		if trackBitrate > 0 {
+			currentBitrate := int(track.bitrateTracker.GetBitrate())
+			if !updateEncoderBitrate(track, currentBitrate, trackBitrate) {
+				s.log.Warnf("No compatible encoder controller for track %s", track.info.TrackID)
+			}
 		}
-
-		currentBitrate := int(track.bitrateTracker.GetBitrate())
-		if !updateEncoderBitrate(track, currentBitrate, trackBitrate) {
-			s.log.Warnf("No compatible encoder controller for track %s", track.info.TrackID)
-		}
+		// Note: tracks with 0 bitrate still remain active, just don't get encoder updates
 	}
 
 	if useCustomAllocation {
