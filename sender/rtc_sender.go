@@ -152,17 +152,20 @@ func getOrCreateEncoderBuilder(info VideoTrackInfo) (codec.VideoEncoderBuilder, 
 		return info.EncoderBuilder, nil
 	}
 
-	if info.InitialBitrate > 0 {
-		params, err := vpx.NewVP8Params()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create default VP8 encoder: %w", err)
-		}
-		params.BitRate = info.InitialBitrate
-
-		return &params, nil
+	// Create encoder even for zero bitrate tracks (like NuroSender)
+	// Use minimum 1000 bps for zero-bitrate tracks to allow creation
+	bitrate := info.InitialBitrate
+	if bitrate <= 0 {
+		bitrate = 1000 // 1 Kbps minimum for zero-allocation tracks
 	}
 
-	return nil, fmt.Errorf("%w for track %s", ErrMissingEncoderConfig, info.TrackID)
+	params, err := vpx.NewVP8Params()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create default VP8 encoder: %w", err)
+	}
+	params.BitRate = bitrate
+
+	return &params, nil
 }
 
 // AddVideoTrack adds a new video track.
@@ -427,14 +430,15 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 
 	for trackID, track := range s.tracks {
 		trackBitrate := s.calculateTrackBitrate(trackID, targetBitrate, equalShare, useCustomAllocation)
-		if trackBitrate <= 0 {
-			continue
-		}
 
-		currentBitrate := int(track.bitrateTracker.GetBitrate())
-		if !updateEncoderBitrate(track, currentBitrate, trackBitrate) {
-			s.log.Warnf("No compatible encoder controller for track %s", track.info.TrackID)
+		// Only update encoder for tracks with positive bitrate (like NuroSender)
+		if trackBitrate > 0 {
+			currentBitrate := int(track.bitrateTracker.GetBitrate())
+			if !updateEncoderBitrate(track, currentBitrate, trackBitrate) {
+				s.log.Warnf("No compatible encoder controller for track %s", track.info.TrackID)
+			}
 		}
+		// Note: tracks with 0 bitrate still remain active, just don't get encoder updates
 	}
 
 	if useCustomAllocation {
