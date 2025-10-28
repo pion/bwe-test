@@ -427,7 +427,7 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 
 	for trackID, track := range s.tracks {
 		trackBitrate := s.calculateTrackBitrate(trackID, targetBitrate, equalShare, useCustomAllocation)
-		
+
 		// Only update encoder for tracks with positive bitrate (like NuroSender)
 		if trackBitrate > 0 {
 			currentBitrate := int(track.bitrateTracker.GetBitrate())
