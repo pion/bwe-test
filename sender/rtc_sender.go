@@ -358,7 +358,7 @@ func (s *RTCSender) Start(ctx context.Context) error {
 	}
 
 	// Combined encoding and bitrate control loop
-	ticker := time.NewTicker(time.Second / 30) // 30 Hz for encoding (matching 30fps input)
+	ticker := time.NewTicker(100 * time.Millisecond) // 10 Hz for encoding (matching 10fps input)
 	defer ticker.Stop()
 
 	for {
@@ -366,7 +366,7 @@ func (s *RTCSender) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			// Check bitrate and process frames at 30 FPS (~33.33ms intervals)
+			// Check bitrate every 100ms
 			targetBitrate := estimator.GetTargetBitrate()
 			s.updateBitrate(targetBitrate)
 
