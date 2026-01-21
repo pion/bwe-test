@@ -511,7 +511,13 @@ func (s *RTCSender) processEncodedFrames() {
 	allHaveErrors := true
 	for result := range results {
 		if result.error != nil {
-			s.log.Errorf("Error processing track %s: %v", result.trackID, result.error)
+			// ErrNoFrameAvailable is expected during normal operation (timing gaps between frames)
+			// Log it at Debug level to reduce noise; other errors remain at Error level
+			if errors.Is(result.error, ErrNoFrameAvailable) {
+				s.log.Debugf("No frame available for track %s", result.trackID)
+			} else {
+				s.log.Errorf("Error processing track %s: %v", result.trackID, result.error)
+			}
 		} else {
 			// At least one result has no error
 			allHaveErrors = false
