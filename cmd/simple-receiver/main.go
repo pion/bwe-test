@@ -1,7 +1,7 @@
 //go:build !js
 // +build !js
 
-// SPDX-FileCopyrightText: 2023 The Pion community <https://pion.ly>
+// SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
 // SPDX-License-Identifier: MIT
 
 // Package main provides a simple HTTP receiver for testing the realtime encoder integration example.
