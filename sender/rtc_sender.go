@@ -71,6 +71,9 @@ type RTCSender struct {
 	tracks   map[string]*EncodedTrack
 	tracksMu sync.RWMutex
 
+	// Audio tracks (pre-encoded Opus, no encoder management needed)
+	audioTracks map[string]*webrtc.TrackLocalStaticSample
+
 	// Bandwidth estimation
 	estimatorChan chan cc.BandwidthEstimator
 
@@ -92,6 +95,7 @@ func NewRTCSender(opts ...Option) (*RTCSender, error) {
 		mediaEngine:       &webrtc.MediaEngine{},
 		registry:          &interceptor.Registry{},
 		tracks:            make(map[string]*EncodedTrack),
+		audioTracks:       make(map[string]*webrtc.TrackLocalStaticSample),
 		estimatorChan:     make(chan cc.BandwidthEstimator, 1), // Buffered to avoid blocking
 		bitrateAllocation: make(map[string]float64),
 		noEncodedFrame:    false,
@@ -256,6 +260,47 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 	return nil
 }
 
+// AddAudioTrack adds a pre-encoded audio track (Opus).
+// Audio tracks don't participate in bitrate allocation or encoding — they receive
+// pre-encoded Opus frames via WriteSample on the returned track.
+func (s *RTCSender) AddAudioTrack(trackID string) (*webrtc.TrackLocalStaticSample, error) {
+	s.tracksMu.Lock()
+	defer s.tracksMu.Unlock()
+
+	if _, exists := s.audioTracks[trackID]; exists {
+		return nil, fmt.Errorf("%w: %s", ErrTrackAlreadyExists, trackID)
+	}
+	if _, exists := s.tracks[trackID]; exists {
+		return nil, fmt.Errorf("%w: %s", ErrTrackAlreadyExists, trackID)
+	}
+
+	// Per RFC 7587 §7, Opus must be advertised with 2 channels in SDP.
+	// Mono/stereo behavior is controlled by the "stereo" fmtp parameter.
+	audioTrack, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{
+			MimeType:    webrtc.MimeTypeOpus,
+			ClockRate:   48000,
+			Channels:    2,
+			SDPFmtpLine: "minptime=10;useinbandfec=1",
+		},
+		trackID,
+		trackID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	s.audioTracks[trackID] = audioTrack
+
+	// Audio tracks are NOT added to the PeerConnection here. They are
+	// published via LiveKit's PublishTrack, which handles SDP renegotiation
+	// for audio codecs correctly.
+
+	s.log.Infof("Added audio track: %s", trackID)
+
+	return audioTrack, nil
+}
+
 // SendFrame sends a frame to a specific track.
 func (s *RTCSender) SendFrame(trackID string, frame image.Image) error {
 	s.tracksMu.RLock()
@@ -288,7 +333,9 @@ func (s *RTCSender) SetupPeerConnection() error {
 	}
 	s.peerConnection = pc
 
-	// Add existing tracks to peer connection
+	// Add existing video tracks to peer connection.
+	// Audio tracks are NOT added here — they are published separately via
+	// LiveKit's PublishTrack, which handles SDP negotiation for audio codecs.
 	s.tracksMu.RLock()
 	for _, track := range s.tracks {
 		rtpSender, err := s.peerConnection.AddTrack(track.videoTrack)
@@ -590,6 +637,9 @@ func (s *RTCSender) Close() error {
 		_ = track.mediaTrack.Close()
 	}
 
+	// Clear audio tracks (TrackLocalStaticSample has no Close method)
+	s.audioTracks = nil
+
 	if s.peerConnection != nil {
 		return s.peerConnection.Close()
 	}
@@ -602,17 +652,19 @@ func (s *RTCSender) GetPeerConnection() *webrtc.PeerConnection {
 	return s.peerConnection
 }
 
-// GetWebRTCTrackLocal returns the WebRTC track for a specific track ID.
+// GetWebRTCTrackLocal returns the WebRTC track for a specific track ID (video or audio).
 func (s *RTCSender) GetWebRTCTrackLocal(trackID string) (*webrtc.TrackLocalStaticSample, error) {
 	s.tracksMu.RLock()
 	defer s.tracksMu.RUnlock()
 
-	track, exists := s.tracks[trackID]
-	if !exists {
-		return nil, fmt.Errorf("%w: %s", ErrTrackNotFound, trackID)
+	if track, exists := s.tracks[trackID]; exists {
+		return track.videoTrack, nil
+	}
+	if audioTrack, exists := s.audioTracks[trackID]; exists {
+		return audioTrack, nil
 	}
 
-	return track.videoTrack, nil
+	return nil, fmt.Errorf("%w: %s", ErrTrackNotFound, trackID)
 }
 
 // ConfigurableWebRTCSender interface implementation.
