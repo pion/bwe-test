@@ -174,6 +174,130 @@ func TestRTCSender_Close(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+const testAudioTrackID = "audio_ev_external"
+
+func TestRTCSender_AddAudioTrack(t *testing.T) {
+	rtcSender, err := NewRTCSender()
+	require.NoError(t, err)
+
+	track, err := rtcSender.AddAudioTrack(testAudioTrackID)
+	require.NoError(t, err)
+	require.NotNil(t, track)
+
+	// Verify codec is Opus
+	assert.Equal(t, "audio/opus", track.Codec().MimeType)
+	assert.Equal(t, uint32(48000), track.Codec().ClockRate)
+}
+
+func TestRTCSender_AddAudioTrack_Duplicate(t *testing.T) {
+	rtcSender, err := NewRTCSender()
+	require.NoError(t, err)
+
+	_, err = rtcSender.AddAudioTrack("audio_test")
+	require.NoError(t, err)
+
+	// Duplicate should fail
+	_, err = rtcSender.AddAudioTrack("audio_test")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTrackAlreadyExists)
+}
+
+func TestRTCSender_AddAudioTrack_ConflictsWithVideoTrackID(t *testing.T) {
+	rtcSender, err := NewRTCSender()
+	require.NoError(t, err)
+
+	// Add a video track first
+	err = rtcSender.AddVideoTrack(VideoTrackInfo{
+		TrackID:        "shared_id",
+		Width:          640,
+		Height:         480,
+		EncoderBuilder: &MockVideoEncoderBuilder{},
+	})
+	require.NoError(t, err)
+
+	// Audio track with same ID should fail
+	_, err = rtcSender.AddAudioTrack("shared_id")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTrackAlreadyExists)
+}
+
+func TestRTCSender_GetWebRTCTrackLocal_AudioTrack(t *testing.T) {
+	rtcSender, err := NewRTCSender()
+	require.NoError(t, err)
+
+	_, err = rtcSender.AddAudioTrack(testAudioTrackID)
+	require.NoError(t, err)
+
+	// Should be retrievable via GetWebRTCTrackLocal
+	track, err := rtcSender.GetWebRTCTrackLocal(testAudioTrackID)
+	require.NoError(t, err)
+	require.NotNil(t, track)
+	assert.Equal(t, "audio/opus", track.Codec().MimeType)
+}
+
+func TestRTCSender_AddAudioTrack_NotInPeerConnection(t *testing.T) {
+	// Audio tracks are NOT added to PeerConnection by RTCSender.
+	// LiveKit's PublishTrack handles SDP negotiation for audio.
+	rtcSender, err := NewRTCSender()
+	require.NoError(t, err)
+
+	_, err = rtcSender.AddAudioTrack(testAudioTrackID)
+	require.NoError(t, err)
+
+	err = rtcSender.SetupPeerConnection()
+	require.NoError(t, err)
+
+	// Audio track should be retrievable via GetWebRTCTrackLocal
+	// but NOT in PeerConnection senders (PublishTrack adds it later)
+	track, err := rtcSender.GetWebRTCTrackLocal(testAudioTrackID)
+	require.NoError(t, err)
+	require.NotNil(t, track)
+
+	peerConn := rtcSender.GetPeerConnection()
+	senders := peerConn.GetSenders()
+	for _, rtpSender := range senders {
+		if rtpSender.Track() != nil {
+			assert.NotEqual(t, testAudioTrackID, rtpSender.Track().ID(),
+				"audio track should NOT be in PeerConnection senders")
+		}
+	}
+}
+
+func TestRTCSender_SetupPeerConnection_VideoOnlyInPC(t *testing.T) {
+	rtcSender, err := NewRTCSender()
+	require.NoError(t, err)
+
+	err = rtcSender.AddVideoTrack(VideoTrackInfo{
+		TrackID:        "camera_feed_0",
+		Width:          640,
+		Height:         480,
+		EncoderBuilder: &MockVideoEncoderBuilder{},
+	})
+	require.NoError(t, err)
+
+	_, err = rtcSender.AddAudioTrack(testAudioTrackID)
+	require.NoError(t, err)
+
+	err = rtcSender.SetupPeerConnection()
+	require.NoError(t, err)
+
+	peerConn := rtcSender.GetPeerConnection()
+	senders := peerConn.GetSenders()
+
+	foundVideo := false
+	for _, rtpSender := range senders {
+		if rtpSender.Track() == nil {
+			continue
+		}
+		if rtpSender.Track().ID() == "camera_feed_0" {
+			foundVideo = true
+		}
+		assert.NotEqual(t, testAudioTrackID, rtpSender.Track().ID(),
+			"audio track should NOT be in PeerConnection senders")
+	}
+	assert.True(t, foundVideo, "video track should be in PeerConnection senders")
+}
+
 func TestStaticErrors(t *testing.T) {
 	// Test that all static errors are properly defined
 	assert.NotNil(t, ErrTrackAlreadyExists)
