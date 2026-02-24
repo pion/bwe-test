@@ -57,6 +57,7 @@ type EncodedTrack struct {
 	encoderBuilder codec.VideoEncoderBuilder
 	videoSource    VideoSource
 	bitrateTracker *codec.BitrateTracker
+	mimeType       string
 }
 
 // RTCSender is a generic sender that can work with any frame source.
@@ -234,6 +235,7 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 		encoderBuilder: info.EncoderBuilder,
 		videoSource:    frameSource,
 		bitrateTracker: codec.NewBitrateTracker(300 * time.Millisecond),
+		mimeType:       mimeType,
 	}
 
 	// Mark the frame buffer as initialized after successful track creation
@@ -620,8 +622,65 @@ func (s *RTCSender) SetBitrateAllocation(allocation map[string]float64) error {
 		normalizedAllocation[trackID] = value / total
 	}
 
+	s.recreateEncodersForActivatedTracks(normalizedAllocation)
+
 	s.bitrateAllocation = normalizedAllocation
 	s.log.Infof("Updated bitrate allocation: %v (normalized from %v)", normalizedAllocation, allocation)
+
+	return nil
+}
+
+// recreateEncodersForActivatedTracks recreates VP8 encoders for tracks
+// transitioning from inactive (0 allocation) to active (non-zero).
+// This resets the encoder's internal tLastFrame timestamp, preventing
+// vpx_codec_encode from receiving an extremely large duration value
+// that causes VPX_CODEC_INVALID_PARAM (error 8).
+// Must be called while holding tracksMu.Lock.
+func (s *RTCSender) recreateEncodersForActivatedTracks(newAllocation map[string]float64) {
+	for trackID, newValue := range newAllocation {
+		if newValue < 1e-6 {
+			continue
+		}
+
+		oldValue := s.bitrateAllocation[trackID]
+		if oldValue >= 1e-6 {
+			continue
+		}
+
+		track := s.tracks[trackID]
+
+		s.log.Infof("Track %s becoming active (allocation %.4f -> %.4f), recreating encoder", trackID, oldValue, newValue)
+
+		if err := s.recreateEncoder(track); err != nil {
+			s.log.Errorf("Failed to recreate encoder for track %s: %v", trackID, err)
+		}
+	}
+}
+
+// recreateEncoder closes and recreates the VP8 encoder for a track.
+// This resets the encoder's internal tLastFrame timestamp, preventing
+// vpx_codec_encode from receiving an extremely large duration value
+// after a track has been idle for a long time.
+// Must be called while holding tracksMu.Lock.
+func (s *RTCSender) recreateEncoder(track *EncodedTrack) error {
+	// Temporarily reset FrameBuffer to uninitialized so NewEncodedReader
+	// can read a black frame for codec property detection during init.
+	// Always restore to initialized afterward, regardless of success or failure.
+	if fb, ok := track.videoSource.(*FrameBuffer); ok {
+		fb.ResetInitialized()
+		defer fb.SetInitialized()
+	}
+
+	// Create the new encoder FIRST, before closing the old one.
+	// If creation fails, the old encoder remains functional.
+	encodedReader, err := track.mediaTrack.NewEncodedReader(track.mimeType)
+	if err != nil {
+		return fmt.Errorf("failed to recreate encoder: %w", err)
+	}
+
+	// New encoder is ready — now close the old one and swap.
+	_ = track.encodedReader.Close()
+	track.encodedReader = encodedReader
 
 	return nil
 }

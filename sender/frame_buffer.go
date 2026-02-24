@@ -101,6 +101,14 @@ func (f *FrameBuffer) SetInitialized() {
 	f.initialized = true
 }
 
+// ResetInitialized temporarily marks the frame buffer as uninitialized.
+// This causes Read() to return black frames on timeout instead of ErrNoFrameAvailable,
+// which is needed when recreating an encoder (NewEncodedReader reads one frame for
+// property detection during initialization).
+func (f *FrameBuffer) ResetInitialized() {
+	f.initialized = false
+}
+
 // Read returns the next available frame from the buffer
 // If no frame is available within the timeout, it returns a black frame.
 func (f *FrameBuffer) Read() (image.Image, func(), error) {
