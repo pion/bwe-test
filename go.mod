@@ -13,7 +13,7 @@ require (
 	github.com/pion/transport/v3 v3.0.8
 	github.com/pion/webrtc/v4 v4.1.6
 	github.com/stretchr/testify v1.11.1
-	golang.org/x/sync v0.11.0
+	golang.org/x/sync v0.19.0
 )
 
 require (
