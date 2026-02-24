@@ -2,7 +2,7 @@ module github.com/pion/bwe-test
 
 go 1.24.0
 
-toolchain go1.25.3
+toolchain go1.26.0
 
 require (
 	github.com/pion/interceptor v0.1.41
