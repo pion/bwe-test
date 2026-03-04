@@ -238,9 +238,6 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 		mimeType:       mimeType,
 	}
 
-	// Mark the frame buffer as initialized after successful track creation
-	frameSource.SetInitialized()
-
 	// Add track to peer connection if it exists
 	if s.peerConnection != nil {
 		rtpSender, err := s.peerConnection.AddTrack(videoTrack)
@@ -560,8 +557,6 @@ func (s *RTCSender) processEncodedFrames() {
 	allHaveErrors := true
 	for result := range results {
 		if result.error != nil {
-			// ErrNoFrameAvailable is expected during normal operation (timing gaps between frames)
-			// Log it at Debug level to reduce noise; other errors remain at Error level
 			if errors.Is(result.error, ErrNoFrameAvailable) {
 				s.log.Debugf("No frame available for track %s", result.trackID)
 			} else {
@@ -663,14 +658,6 @@ func (s *RTCSender) recreateEncodersForActivatedTracks(newAllocation map[string]
 // after a track has been idle for a long time.
 // Must be called while holding tracksMu.Lock.
 func (s *RTCSender) recreateEncoder(track *EncodedTrack) error {
-	// Temporarily reset FrameBuffer to uninitialized so NewEncodedReader
-	// can read a black frame for codec property detection during init.
-	// Always restore to initialized afterward, regardless of success or failure.
-	if fb, ok := track.videoSource.(*FrameBuffer); ok {
-		fb.ResetInitialized()
-		defer fb.SetInitialized()
-	}
-
 	// Create the new encoder FIRST, before closing the old one.
 	// If creation fails, the old encoder remains functional.
 	encodedReader, err := track.mediaTrack.NewEncodedReader(track.mimeType)

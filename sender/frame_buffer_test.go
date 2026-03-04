@@ -36,32 +36,11 @@ func TestFrameBuffer_SendAndRead(t *testing.T) {
 	err := fb.SendFrame(testImg)
 	require.NoError(t, err)
 
-	// Mark as initialized so we don't get black frames
-	fb.SetInitialized()
-
 	// Read the frame back
 	img, release, err := fb.Read()
 	require.NoError(t, err)
 	require.NotNil(t, img)
 	require.NotNil(t, release)
-
-	// Release the frame
-	release()
-}
-
-func TestFrameBuffer_ReadTimeout(t *testing.T) {
-	fb := NewFrameBuffer(640, 480)
-	defer func() { _ = fb.Close() }()
-
-	// Don't mark as initialized, so we should get a black frame on timeout
-	img, release, err := fb.Read()
-	require.NoError(t, err)
-	require.NotNil(t, img)
-	require.NotNil(t, release)
-
-	// Should be a YCbCr image (black frame)
-	_, ok := img.(*image.YCbCr)
-	assert.True(t, ok, "Expected YCbCr image for black frame")
 
 	release()
 }
@@ -76,7 +55,7 @@ func TestFrameBuffer_ReadAfterClose(t *testing.T) {
 	// Try to read after close
 	img, release, err := fb.Read()
 	assert.Nil(t, img)
-	assert.NotNil(t, release) // Release function should still be provided
+	assert.NotNil(t, release)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrBufferClosed)
 }
@@ -110,22 +89,6 @@ func TestFrameBuffer_BufferFull(t *testing.T) {
 	}
 }
 
-func TestFrameBuffer_ReadWithoutFrames(t *testing.T) {
-	fb := NewFrameBuffer(640, 480)
-	defer func() { _ = fb.Close() }()
-
-	// Mark as initialized so we don't get black frames
-	fb.SetInitialized()
-
-	// Try to read without sending any frames
-	// This should timeout and return ErrNoFrameAvailable
-	img, release, err := fb.Read()
-	assert.Nil(t, img)
-	assert.NotNil(t, release)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrNoFrameAvailable)
-}
-
 func TestFrameBuffer_MultipleClose(t *testing.T) {
 	fb := NewFrameBuffer(640, 480)
 
@@ -137,26 +100,21 @@ func TestFrameBuffer_MultipleClose(t *testing.T) {
 	assert.NoError(t, err2)
 }
 
-func TestGetBlackFrame(t *testing.T) {
-	// Test that getBlackFrame returns a valid black frame
-	blackFrame := getBlackFrame(640, 480)
-	require.NotNil(t, blackFrame)
+func TestFrameBuffer_ReadWithoutFrames(t *testing.T) {
+	fb := NewFrameBuffer(640, 480)
+	defer func() { _ = fb.Close() }()
 
-	assert.Equal(t, 640, blackFrame.Bounds().Dx())
-	assert.Equal(t, 480, blackFrame.Bounds().Dy())
-
-	// Test that multiple calls return the same instance (singleton)
-	blackFrame2 := getBlackFrame(640, 480)
-	assert.Equal(t, blackFrame, blackFrame2, "getBlackFrame should return the same instance")
+	img, release, err := fb.Read()
+	assert.Nil(t, img)
+	assert.NotNil(t, release)
+	assert.ErrorIs(t, err, ErrNoFrameAvailable)
 }
 
 func TestFrameBufferStaticErrors(t *testing.T) {
-	// Test that all frame buffer static errors are properly defined
 	assert.NotNil(t, ErrBufferClosed)
 	assert.NotNil(t, ErrNoFrameAvailable)
 	assert.NotNil(t, ErrFailedToAddFrameAfterDrop)
 
-	// Test error messages
 	assert.Contains(t, ErrBufferClosed.Error(), "closed")
 	assert.Contains(t, ErrNoFrameAvailable.Error(), "no frame")
 	assert.Contains(t, ErrFailedToAddFrameAfterDrop.Error(), "failed to add")
@@ -166,9 +124,6 @@ func TestFrameBuffer_ConcurrentAccess(t *testing.T) {
 	fb := NewFrameBuffer(640, 480)
 	defer func() { _ = fb.Close() }()
 
-	fb.SetInitialized()
-
-	// Test concurrent sends and reads
 	done := make(chan bool)
 
 	// Sender goroutine
@@ -189,13 +144,9 @@ func TestFrameBuffer_ConcurrentAccess(t *testing.T) {
 			if err == nil && img != nil {
 				release()
 			}
-			time.Sleep(15 * time.Millisecond)
 		}
 	}()
 
-	// Wait for both goroutines to complete
 	<-done
 	<-done
-
-	// Test should complete without deadlock or panic
 }
