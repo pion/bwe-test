@@ -14,6 +14,7 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
 	plogging "github.com/pion/logging"
+	"github.com/pion/transport/v4/vnet"
 	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -76,10 +77,10 @@ func TestPacketLogWriter(t *testing.T) {
 	option := PacketLogWriter(rtpBuf, rtcpBuf)
 	require.NotNil(t, option)
 
-	// Test that option is a function
-	assert.IsType(t, Option(nil), option)
-
-	// Note: Full testing would require WebRTC setup, so we just test the option creation
+	mock := &MockConfigurableWebRTCSender{}
+	err := option(mock)
+	assert.NoError(t, err)
+	assert.NotNil(t, mock.registry)
 }
 
 func TestCCLogWriter(t *testing.T) {
@@ -121,14 +122,18 @@ func TestSetLoggerFactory(t *testing.T) {
 }
 
 func TestSetVnet(t *testing.T) {
-	// Test SetVnet option creation
-	option := SetVnet(nil, nil)
+	network, err := vnet.NewNet(&vnet.NetConfig{})
+	if err != nil {
+		t.Skip("Cannot create vnet for test")
+	}
+
+	publicIPs := []string{"1.2.3.4"}
+	option := SetVnet(network, publicIPs)
 	require.NotNil(t, option)
 
-	// Test that option is a function
-	assert.IsType(t, Option(nil), option)
-
-	// Note: Full testing would require vnet setup, so we just test the option creation
+	mock := &MockConfigurableWebRTCSender{}
+	err = option(mock)
+	assert.NoError(t, err)
 }
 
 func TestOptionTypeSignature(t *testing.T) {
