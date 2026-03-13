@@ -7,7 +7,7 @@ toolchain go1.24.8
 require (
 	github.com/pion/bwe-test v0.0.0-00010101000000-000000000000
 	github.com/pion/logging v0.2.4
-	github.com/pion/mediadevices v0.7.3-0.20251009231533-a68a5ba4a6ca
+	github.com/pion/mediadevices v0.9.4
 	github.com/pion/transport/v4 v4.0.1
 	github.com/stretchr/testify v1.11.1
 	gocv.io/x/gocv v0.31.0
