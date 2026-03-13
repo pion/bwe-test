@@ -19,20 +19,20 @@ type RTPFormatter struct {
 	seqnr sequencenumber.Unwrapper
 }
 
-// RTPFormat formats an RTP packet as a string for logging.
-func (f *RTPFormatter) RTPFormat(pkt *rtp.Packet, _ interceptor.Attributes) string {
+// RTPFormat formats an RTP packet as a binary byte slice for logging.
+func (f *RTPFormatter) RTPFormat(pkt *rtp.Packet, _ interceptor.Attributes) ([]byte, error) {
 	var twcc rtp.TransportCCExtension
 	unwrappedSeqNr := f.seqnr.Unwrap(pkt.SequenceNumber)
 	var twccNr uint16
 	if len(pkt.GetExtensionIDs()) > 0 {
 		ext := pkt.GetExtension(pkt.GetExtensionIDs()[0])
 		if err := twcc.Unmarshal(ext); err != nil {
-			return fmt.Sprintf("Error unmarshaling TWCC extension: %v", err)
+			return nil, fmt.Errorf("error unmarshaling TWCC extension: %w", err)
 		}
 		twccNr = twcc.TransportSequence
 	}
 
-	return fmt.Sprintf("%v, %v, %v, %v, %v, %v, %v, %v, %v\n",
+	return []byte(fmt.Sprintf("%v, %v, %v, %v, %v, %v, %v, %v, %v\n",
 		time.Now().UnixMilli(),
 		pkt.PayloadType,
 		pkt.SSRC,
@@ -42,21 +42,19 @@ func (f *RTPFormatter) RTPFormat(pkt *rtp.Packet, _ interceptor.Attributes) stri
 		pkt.MarshalSize(),
 		twccNr,
 		unwrappedSeqNr,
-	)
+	)), nil
 }
 
-// RTCPFormat formats RTCP packets as a string for logging.
-func RTCPFormat(pkts []rtcp.Packet, _ interceptor.Attributes) string {
+// RTCPFormat formats a single RTCP packet as a binary byte slice for logging.
+func RTCPFormat(pkt rtcp.Packet, _ interceptor.Attributes) ([]byte, error) {
 	now := time.Now().UnixMilli()
 	size := 0
-	for _, pkt := range pkts {
-		switch feedback := pkt.(type) {
-		case *rtcp.TransportLayerCC:
-			size += int(feedback.Len())
-		case *rtcp.RawPacket:
-			size += len(*feedback)
-		}
+	switch feedback := pkt.(type) {
+	case *rtcp.TransportLayerCC:
+		size = int(feedback.Len())
+	case *rtcp.RawPacket:
+		size = len(*feedback)
 	}
 
-	return fmt.Sprintf("%v, %v\n", now, size)
+	return []byte(fmt.Sprintf("%v, %v\n", now, size)), nil
 }

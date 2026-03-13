@@ -8,6 +8,7 @@ package receiver
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -398,7 +399,7 @@ func TestReceiver_FinalCoveragePush(t *testing.T) {
 	// Test setupVP8Processing multiple times
 	for i := range 3 {
 		trackInfo := &trackInfo{
-			identifier: "track-" + string(rune(i+'1')),
+			identifier: fmt.Sprintf("track-%d", i+1),
 			isVideo:    true,
 			isVP8:      true,
 		}
@@ -412,7 +413,7 @@ func TestReceiver_FinalCoveragePush(t *testing.T) {
 	// Test createOutputFile with various valid scenarios
 	receiver.outputBasePath = "valid_test_output"
 	for i := range 3 {
-		receiver.createOutputFile("valid-track-" + string(rune(i+'1')))
+		receiver.createOutputFile(fmt.Sprintf("valid-track-%d", i+1))
 	}
 
 	// Test one more createOutputFile edge case
@@ -448,10 +449,10 @@ func TestReceiver_TrackIdentifierGeneration(t *testing.T) {
 
 	// Test multiple identifier generations
 	receiver.trackCounter++
-	identifier1 := "track-" + string(rune(receiver.trackCounter+'0'))
+	identifier1 := fmt.Sprintf("track-%d", receiver.trackCounter)
 
 	receiver.trackCounter++
-	identifier2 := "track-" + string(rune(receiver.trackCounter+'0'))
+	identifier2 := fmt.Sprintf("track-%d", receiver.trackCounter)
 
 	assert.NotEqual(t, identifier1, identifier2, "Track identifiers should be unique")
 	assert.Contains(t, identifier1, "track-", "Track identifier should contain track- prefix")

@@ -179,7 +179,7 @@ func startSignaling(rtcSender *sender.RTCSender, cancel context.CancelFunc, logg
 		req.Header.Set("Content-Type", "application/json")
 
 		client := &http.Client{}
-		resp, err := client.Do(req)
+		resp, err := client.Do(req) //nolint:gosec // G704: URL is hardcoded to localhost for local testing
 		if err != nil {
 			logger.Error(fmt.Sprintf("Failed to send offer: %v", err))
 			cancel()

@@ -26,14 +26,14 @@ func PacketLogWriter(rtpWriter, rtcpWriter io.Writer) Option {
 	return func(receiver *Receiver) error {
 		formatter := logging.RTPFormatter{}
 		rtpLogger, err := packetdump.NewReceiverInterceptor(
-			packetdump.RTPFormatter(formatter.RTPFormat),
+			packetdump.RTPBinaryFormatter(formatter.RTPFormat),
 			packetdump.RTPWriter(rtpWriter),
 		)
 		if err != nil {
 			return err
 		}
 		rtcpLogger, err := packetdump.NewSenderInterceptor(
-			packetdump.RTCPFormatter(logging.RTCPFormat),
+			packetdump.RTCPBinaryFormatter(logging.RTCPFormat),
 			packetdump.RTCPWriter(rtcpWriter),
 		)
 		if err != nil {
@@ -58,7 +58,12 @@ func SetVnet(v *vnet.Net, publicIPs []string) Option {
 	return func(r *Receiver) error {
 		r.settingEngine.SetNet(v)
 		r.settingEngine.SetICETimeouts(time.Second, time.Second, 200*time.Millisecond)
-		r.settingEngine.SetNAT1To1IPs(publicIPs, webrtc.ICECandidateTypeHost)
+		if err := r.settingEngine.SetICEAddressRewriteRules(webrtc.ICEAddressRewriteRule{
+			External:       publicIPs,
+			AsCandidateType: webrtc.ICECandidateTypeHost,
+		}); err != nil {
+			return err
+		}
 
 		return nil
 	}
