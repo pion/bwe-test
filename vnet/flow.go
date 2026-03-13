@@ -21,7 +21,7 @@ import (
 	"github.com/pion/bwe-test/receiver"
 	"github.com/pion/bwe-test/sender"
 	plogging "github.com/pion/logging"
-	"github.com/pion/transport/v3/vnet"
+	"github.com/pion/transport/v4/vnet"
 )
 
 // Flow represents a WebRTC connection between a sender and receiver over a virtual network.

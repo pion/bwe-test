@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/pion/logging"
-	"github.com/pion/transport/v3/vnet"
+	"github.com/pion/transport/v4/vnet"
 )
 
 var errNoIPAvailiable = errors.New("no IP available")
@@ -51,14 +51,19 @@ type NetworkManager struct {
 
 type NetworkComponents struct {
 	routerWithConfig *RouterWithConfig
-	tbf              *vnet.TokenBucketFilter
+	tbfQueue         *vnet.TBFQueue
+	queue            *vnet.Queue
 	lossFilter       *vnet.LossFilter
 	delayFilter      *vnet.DelayFilter
 }
 
 const (
-	initCapacity = 1 * vnet.MBit
-	initMaxBurst = 80 * vnet.KBit
+	// Bit rate constants (removed from transport/v4).
+	KBit = 1000
+	MBit = 1000 * KBit
+
+	initCapacity = 1 * MBit
+	initMaxBurst = 80 * KBit
 )
 
 // NewManager creates a new NetworkManager with default configuration.
@@ -120,7 +125,6 @@ func (m *NetworkManager) GetLeftNet() (*vnet.Net, string, error) {
 
 	net, err := vnet.NewNet(&vnet.NetConfig{
 		StaticIPs: []string{privateIP},
-		StaticIP:  "",
 	})
 	if err != nil {
 		return nil, "", err
@@ -142,7 +146,6 @@ func (m *NetworkManager) GetRightNet() (*vnet.Net, string, error) {
 
 	net, err := vnet.NewNet(&vnet.NetConfig{
 		StaticIPs: []string{privateIP},
-		StaticIP:  "",
 	})
 	if err != nil {
 		return nil, "", err
@@ -163,11 +166,13 @@ func (m *NetworkManager) SetCapacity(capacity, maxBurst int) {
 }
 
 func (m *NetworkManager) SetLeftCapacity(capacity, maxBurst int) {
-	m.leftNetComponents.tbf.Set(vnet.TBFRate(capacity), vnet.TBFMaxBurst(maxBurst))
+	m.leftNetComponents.tbfQueue.SetRate(capacity)
+	m.leftNetComponents.tbfQueue.SetBurst(maxBurst)
 }
 
 func (m *NetworkManager) SetRightCapacity(capacity, maxBurst int) {
-	m.rightNetComponents.tbf.Set(vnet.TBFRate(capacity), vnet.TBFMaxBurst(maxBurst))
+	m.rightNetComponents.tbfQueue.SetRate(capacity)
+	m.rightNetComponents.tbfQueue.SetBurst(maxBurst)
 }
 
 func (m *NetworkManager) SetAckLossRate(lossRate int) {
@@ -207,21 +212,18 @@ func newLeftNet() (*NetworkComponents, error) {
 		return nil, err
 	}
 
-	tbf, err := vnet.NewTokenBucketFilter(
-		router,
-		vnet.TBFRate(initCapacity),
-		vnet.TBFMaxBurst(initMaxBurst),
-	)
+	tbfQueue := vnet.NewTBFQueue(initCapacity, initMaxBurst, 1024*1024)
+	queue, err := vnet.NewQueue(router, tbfQueue)
 	if err != nil {
 		return nil, err
 	}
 
-	lossFilter, err := vnet.NewLossFilter(tbf, 0)
+	lossFilter, err := vnet.NewLossFilter(queue, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	delayFilter, err := vnet.NewDelayFilter(lossFilter, 0*time.Millisecond)
+	delayFilter, err := vnet.NewDelayFilter(lossFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +235,8 @@ func newLeftNet() (*NetworkComponents, error) {
 
 	return &NetworkComponents{
 		routerWithConfig: routerWithConfig,
-		tbf:              tbf,
+		tbfQueue:         tbfQueue,
+		queue:            queue,
 		lossFilter:       lossFilter,
 		delayFilter:      delayFilter,
 	}, nil
@@ -259,21 +262,18 @@ func newRightNet() (*NetworkComponents, error) {
 		return nil, err
 	}
 
-	tbf, err := vnet.NewTokenBucketFilter(
-		router,
-		vnet.TBFRate(initCapacity),
-		vnet.TBFMaxBurst(initMaxBurst),
-	)
+	tbfQueue := vnet.NewTBFQueue(initCapacity, initMaxBurst, 1024*1024)
+	queue, err := vnet.NewQueue(router, tbfQueue)
 	if err != nil {
 		return nil, err
 	}
 
-	lossFilter, err := vnet.NewLossFilter(tbf, 0)
+	lossFilter, err := vnet.NewLossFilter(queue, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	delayFilter, err := vnet.NewDelayFilter(lossFilter, 0)
+	delayFilter, err := vnet.NewDelayFilter(lossFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -285,7 +285,8 @@ func newRightNet() (*NetworkComponents, error) {
 
 	return &NetworkComponents{
 		routerWithConfig: routerWithConfig,
-		tbf:              tbf,
+		tbfQueue:         tbfQueue,
+		queue:            queue,
 		lossFilter:       lossFilter,
 		delayFilter:      delayFilter,
 	}, nil

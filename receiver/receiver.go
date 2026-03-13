@@ -22,7 +22,6 @@ import (
 	"github.com/pion/interceptor"
 	"github.com/pion/logging"
 	"github.com/pion/rtp"
-	"github.com/pion/transport/v3/vnet"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media/ivfwriter"
 )
@@ -346,7 +345,7 @@ func (r *Receiver) startStatsGoroutine(ctx context.Context, bytesReceivedChan ch
 				delta := now.Sub(last)
 				bits := float64(bytesReceived) * 8.0
 				rate := bits / delta.Seconds()
-				mBitPerSecond := rate / float64(vnet.MBit)
+				mBitPerSecond := rate / 1e6
 				r.log.Infof("throughput: %.2f Mb/s | RTP packets: %d | Frames: %d | Keyframes: %d",
 					mBitPerSecond, stats.rtpPacketsReceived, stats.framesAssembled, stats.keyframesReceived)
 				bytesReceived = 0

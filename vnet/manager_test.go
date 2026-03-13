@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/transport/v3/vnet"
+	"github.com/pion/transport/v4/vnet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -80,39 +80,39 @@ func TestNetworkManager_SetCapacity(t *testing.T) {
 	require.NoError(t, err, "NewManager() should not error")
 
 	// Test setting capacity for both sides
-	capacity := int(2 * vnet.MBit)
-	maxBurst := int(100 * vnet.KBit)
+	capacity := int(2 * MBit)
+	maxBurst := int(100 * KBit)
 
 	manager.SetCapacity(capacity, maxBurst)
 
 	// Verify that both sides have the capacity set
 	// We can't directly test the TBF values, but we can ensure the method doesn't panic
-	assert.NotNil(t, manager.leftNetComponents.tbf, "Left TBF should be initialized")
-	assert.NotNil(t, manager.rightNetComponents.tbf, "Right TBF should be initialized")
+	assert.NotNil(t, manager.leftNetComponents.tbfQueue, "Left TBF should be initialized")
+	assert.NotNil(t, manager.rightNetComponents.tbfQueue, "Right TBF should be initialized")
 }
 
 func TestNetworkManager_SetLeftCapacity(t *testing.T) {
 	manager, err := NewManager()
 	require.NoError(t, err, "NewManager() should not error")
 
-	capacity := int(1.5 * vnet.MBit)
-	maxBurst := int(50 * vnet.KBit)
+	capacity := int(1.5 * MBit)
+	maxBurst := int(50 * KBit)
 
 	manager.SetLeftCapacity(capacity, maxBurst)
 
-	assert.NotNil(t, manager.leftNetComponents.tbf, "Left TBF should be initialized")
+	assert.NotNil(t, manager.leftNetComponents.tbfQueue, "Left TBF should be initialized")
 }
 
 func TestNetworkManager_SetRightCapacity(t *testing.T) {
 	manager, err := NewManager()
 	require.NoError(t, err, "NewManager() should not error")
 
-	capacity := int(3 * vnet.MBit)
-	maxBurst := int(150 * vnet.KBit)
+	capacity := int(3 * MBit)
+	maxBurst := int(150 * KBit)
 
 	manager.SetRightCapacity(capacity, maxBurst)
 
-	assert.NotNil(t, manager.rightNetComponents.tbf, "Right TBF should be initialized")
+	assert.NotNil(t, manager.rightNetComponents.tbfQueue, "Right TBF should be initialized")
 }
 
 func TestNetworkManager_SetAckLossRate(t *testing.T) {
@@ -231,7 +231,7 @@ func TestNewLeftNet(t *testing.T) {
 	require.NoError(t, err, "newLeftNet() should not error")
 	assert.NotNil(t, components, "newLeftNet() should return non-nil components")
 	assert.NotNil(t, components.routerWithConfig, "routerWithConfig should be initialized")
-	assert.NotNil(t, components.tbf, "TBF should be initialized")
+	assert.NotNil(t, components.tbfQueue, "TBF should be initialized")
 	assert.NotNil(t, components.lossFilter, "lossFilter should be initialized")
 	assert.NotNil(t, components.delayFilter, "delayFilter should be initialized")
 }
@@ -241,7 +241,7 @@ func TestNewRightNet(t *testing.T) {
 	require.NoError(t, err, "newRightNet() should not error")
 	assert.NotNil(t, components, "newRightNet() should return non-nil components")
 	assert.NotNil(t, components.routerWithConfig, "routerWithConfig should be initialized")
-	assert.NotNil(t, components.tbf, "TBF should be initialized")
+	assert.NotNil(t, components.tbfQueue, "TBF should be initialized")
 	assert.NotNil(t, components.lossFilter, "lossFilter should be initialized")
 	assert.NotNil(t, components.delayFilter, "delayFilter should be initialized")
 }
@@ -253,14 +253,14 @@ func TestNetworkComponents_Initialization(t *testing.T) {
 	// Test left network components
 	leftComponents := manager.leftNetComponents
 	assert.NotNil(t, leftComponents.routerWithConfig, "Left routerWithConfig should be initialized")
-	assert.NotNil(t, leftComponents.tbf, "Left TBF should be initialized")
+	assert.NotNil(t, leftComponents.tbfQueue, "Left TBF should be initialized")
 	assert.NotNil(t, leftComponents.lossFilter, "Left lossFilter should be initialized")
 	assert.NotNil(t, leftComponents.delayFilter, "Left delayFilter should be initialized")
 
 	// Test right network components
 	rightComponents := manager.rightNetComponents
 	assert.NotNil(t, rightComponents.routerWithConfig, "Right routerWithConfig should be initialized")
-	assert.NotNil(t, rightComponents.tbf, "Right TBF should be initialized")
+	assert.NotNil(t, rightComponents.tbfQueue, "Right TBF should be initialized")
 	assert.NotNil(t, rightComponents.lossFilter, "Right lossFilter should be initialized")
 	assert.NotNil(t, rightComponents.delayFilter, "Right delayFilter should be initialized")
 }
@@ -270,8 +270,8 @@ func TestNetworkManager_Integration(t *testing.T) {
 	require.NoError(t, err, "NewManager() should not error")
 
 	// Test complete workflow
-	capacity := int(2 * vnet.MBit)
-	maxBurst := int(100 * vnet.KBit)
+	capacity := int(2 * MBit)
+	maxBurst := int(100 * KBit)
 	lossRate := 5
 	delay := 50 * time.Millisecond
 
@@ -299,8 +299,8 @@ func TestNetworkManager_Integration(t *testing.T) {
 
 func TestConstants(t *testing.T) {
 	// Test that constants are properly defined
-	assert.Equal(t, 1*vnet.MBit, initCapacity, "initCapacity should be 1 MBit")
-	assert.Equal(t, 80*vnet.KBit, initMaxBurst, "initMaxBurst should be 80 KBit")
+	assert.Equal(t, 1*MBit, initCapacity, "initCapacity should be 1 MBit")
+	assert.Equal(t, 80*KBit, initMaxBurst, "initMaxBurst should be 80 KBit")
 }
 
 func TestManagerErrorConstants(t *testing.T) {
