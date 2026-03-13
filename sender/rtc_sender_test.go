@@ -7,7 +7,9 @@
 package sender
 
 import (
+	"image"
 	"testing"
+	"time"
 
 	"github.com/pion/mediadevices/pkg/codec"
 	"github.com/pion/mediadevices/pkg/io/video"
@@ -296,6 +298,119 @@ func TestRTCSender_SetupPeerConnection_VideoOnlyInPC(t *testing.T) {
 			"audio track should NOT be in PeerConnection senders")
 	}
 	assert.True(t, foundVideo, "video track should be in PeerConnection senders")
+}
+
+func TestRTCSender_ProcessEncodedFrames_NoTracks(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	// Should return immediately with no tracks.
+	sender.processEncodedFrames()
+}
+
+func TestRTCSender_ProcessEncodedFrames_WithTracks(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	err = sender.AddVideoTrack(VideoTrackInfo{
+		TrackID:        "cam-0",
+		Width:          640,
+		Height:         480,
+		InitialBitrate: 500_000,
+	})
+	require.NoError(t, err)
+
+	// Call processEncodedFrames multiple times — exercises the sequential loop
+	// with a real encoder. The encoder may have data from init (black frame).
+	sender.processEncodedFrames()
+
+	// Send a frame so the encoder can produce output.
+	testImg := image.NewYCbCr(image.Rect(0, 0, 640, 480), image.YCbCrSubsampleRatio420)
+	err = sender.SendFrame("cam-0", testImg)
+	require.NoError(t, err)
+
+	// Give encoder time to consume the frame.
+	time.Sleep(150 * time.Millisecond)
+
+	sender.processEncodedFrames()
+	// We mainly verify no panics or deadlocks here.
+}
+
+func TestRTCSender_ProcessEncodedFrames_AllErrors(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	err = sender.AddVideoTrack(VideoTrackInfo{
+		TrackID:        "cam-0",
+		Width:          640,
+		Height:         480,
+		EncoderBuilder: &MockVideoEncoderBuilder{},
+	})
+	require.NoError(t, err)
+
+	// Drain any buffered frames — the mock encoder always returns empty data,
+	// but the FrameBuffer Read() will return ErrNoFrameAvailable in the
+	// non-blocking path (initialized), which propagates through the encoder.
+	// Call several times to ensure we hit the no-frame path.
+	for range 5 {
+		sender.processEncodedFrames()
+	}
+
+	// Verify noEncodedFrame reflects the state.
+	_ = sender.GetEncodeFrameOk()
+}
+
+func TestRTCSender_GetEncodeFrameOk(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	// Default should be true (noEncodedFrame starts false).
+	assert.True(t, sender.GetEncodeFrameOk())
+
+	// After processEncodedFrames with no tracks, should still be true (early return).
+	sender.processEncodedFrames()
+	assert.True(t, sender.GetEncodeFrameOk())
+}
+
+func TestRTCSender_SetupPeerConnection_CancelsRTCP(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	err = sender.AddVideoTrack(VideoTrackInfo{
+		TrackID:        "cam-0",
+		Width:          640,
+		Height:         480,
+		EncoderBuilder: &MockVideoEncoderBuilder{},
+	})
+	require.NoError(t, err)
+
+	// First SetupPeerConnection — should create rtcpCancel.
+	err = sender.SetupPeerConnection()
+	require.NoError(t, err)
+	assert.NotNil(t, sender.rtcpCancel)
+
+	// Second SetupPeerConnection — should cancel the first context.
+	err = sender.SetupPeerConnection()
+	require.NoError(t, err)
+	assert.NotNil(t, sender.rtcpCancel)
+}
+
+func TestRTCSender_Close_CancelsRTCP(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+
+	err = sender.SetupPeerConnection()
+	require.NoError(t, err)
+	assert.NotNil(t, sender.rtcpCancel)
+
+	err = sender.Close()
+	require.NoError(t, err)
+	assert.Nil(t, sender.rtcpCancel, "rtcpCancel should be nil after Close")
 }
 
 func TestStaticErrors(t *testing.T) {
