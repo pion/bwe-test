@@ -106,7 +106,7 @@ func SetVnet(v *vnet.Net, publicIPs []string) Option {
 		settingEngine.SetNet(v)
 		settingEngine.SetICETimeouts(time.Second, time.Second, 200*time.Millisecond)
 		if err := settingEngine.SetICEAddressRewriteRules(webrtc.ICEAddressRewriteRule{
-			External:       publicIPs,
+			External:        publicIPs,
 			AsCandidateType: webrtc.ICECandidateTypeHost,
 		}); err != nil {
 			return err
