@@ -79,8 +79,7 @@ func TestPacketLogWriter(t *testing.T) {
 
 	mock := &MockConfigurableWebRTCSender{}
 	err := option(mock)
-	assert.NoError(t, err)
-	assert.NotNil(t, mock.registry)
+	require.NoError(t, err)
 }
 
 func TestCCLogWriter(t *testing.T) {

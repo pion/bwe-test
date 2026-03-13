@@ -9,6 +9,7 @@ package receiver
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -250,7 +251,8 @@ func TestReceiver_SDPHandler(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(tt.method, "/sdp", strings.NewReader(tt.body))
+			req, err := http.NewRequestWithContext(t.Context(), tt.method, "/sdp", strings.NewReader(tt.body))
+			assert.NoError(t, err)
 			if tt.contentType != "" {
 				req.Header.Set("Content-Type", tt.contentType)
 			}

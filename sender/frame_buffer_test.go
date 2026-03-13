@@ -118,7 +118,7 @@ func TestFrameBuffer_ReadWithoutFrames(t *testing.T) {
 	fb.SetInitialized()
 
 	// Try to read without sending any frames
-	// This should timeout and return ErrNoFrameAvailable
+	// This should return ErrNoFrameAvailable immediately (non-blocking)
 	img, release, err := fb.Read()
 	assert.Nil(t, img)
 	assert.NotNil(t, release)
@@ -160,6 +160,38 @@ func TestFrameBufferStaticErrors(t *testing.T) {
 	assert.Contains(t, ErrBufferClosed.Error(), "closed")
 	assert.Contains(t, ErrNoFrameAvailable.Error(), "no frame")
 	assert.Contains(t, ErrFailedToAddFrameAfterDrop.Error(), "failed to add")
+}
+
+func TestFrameBuffer_ReadInitializedAfterClose(t *testing.T) {
+	fb := NewFrameBuffer(640, 480)
+	fb.SetInitialized()
+
+	// Close, then read — fast path should detect closeChan.
+	err := fb.Close()
+	require.NoError(t, err)
+
+	img, release, err := fb.Read()
+	assert.Nil(t, img)
+	assert.NotNil(t, release)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrBufferClosed)
+}
+
+func TestFrameBuffer_ReadUninitializedWithFrame(t *testing.T) {
+	fb := NewFrameBuffer(640, 480)
+	defer func() { _ = fb.Close() }()
+
+	// Don't call SetInitialized — this exercises the blocking path.
+	// Send a frame before reading so the blocking select picks it up.
+	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
+	err := fb.SendFrame(testImg)
+	require.NoError(t, err)
+
+	img, release, err := fb.Read()
+	require.NoError(t, err)
+	require.NotNil(t, img)
+	assert.Equal(t, testImg, img)
+	release()
 }
 
 func TestFrameBuffer_ConcurrentAccess(t *testing.T) {

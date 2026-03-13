@@ -109,10 +109,24 @@ func (f *FrameBuffer) ResetInitialized() {
 	f.initialized = false
 }
 
-// Read returns the next available frame from the buffer
-// If no frame is available within the timeout, it returns a black frame.
+// Read returns the next available frame from the buffer.
+// When initialized (normal operation), returns immediately with ErrNoFrameAvailable
+// if no frame is ready. When not initialized (encoder init), blocks up to 100ms
+// and returns a black frame for codec property detection.
 func (f *FrameBuffer) Read() (image.Image, func(), error) {
-	// Add timeout to prevent indefinite blocking during encoder initialization
+	if f.initialized {
+		// Non-blocking fast path for normal operation.
+		select {
+		case img := <-f.frameChan:
+			return img, func() {}, nil
+		case <-f.closeChan:
+			return nil, func() {}, ErrBufferClosed
+		default:
+			return nil, func() {}, ErrNoFrameAvailable
+		}
+	}
+
+	// Blocking path for encoder initialization — returns black frame on timeout.
 	timer := time.NewTimer(100 * time.Millisecond)
 	defer timer.Stop()
 
@@ -122,14 +136,9 @@ func (f *FrameBuffer) Read() (image.Image, func(), error) {
 	case <-f.closeChan:
 		return nil, func() {}, ErrBufferClosed
 	case <-timer.C:
-		// Return black frame if not initialized, nil otherwise
-		if !f.initialized {
-			blackFrame := getBlackFrame(f.width, f.height)
+		blackFrame := getBlackFrame(f.width, f.height)
 
-			return blackFrame, func() {}, nil
-		}
-
-		return nil, func() {}, ErrNoFrameAvailable
+		return blackFrame, func() {}, nil
 	}
 }
 

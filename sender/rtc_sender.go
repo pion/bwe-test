@@ -84,6 +84,9 @@ type RTCSender struct {
 	// Frame processing status (protected by tracksMu)
 	noEncodedFrame bool
 
+	// Cancel function for RTCP reader goroutines. Replaced on each SetupPeerConnection.
+	rtcpCancel context.CancelFunc
+
 	// Logging
 	ccLogWriter io.Writer
 	log         logging.LeveledLogger
@@ -335,6 +338,13 @@ func (s *RTCSender) SetupPeerConnection() error {
 	}
 	s.peerConnection = pc
 
+	// Cancel any RTCP goroutines from a previous peer connection before creating new ones.
+	if s.rtcpCancel != nil {
+		s.rtcpCancel()
+	}
+	rtcpCtx, rtcpCancel := context.WithCancel(context.Background())
+	s.rtcpCancel = rtcpCancel
+
 	// Add existing video tracks to peer connection.
 	// Audio tracks are NOT added here — they are published separately via
 	// LiveKit's PublishTrack, which handles SDP negotiation for audio codecs.
@@ -347,10 +357,15 @@ func (s *RTCSender) SetupPeerConnection() error {
 			return err
 		}
 
-		// Handle incoming RTCP
+		// Handle incoming RTCP. Exits on context cancellation or read error.
 		go func() {
 			rtcpBuf := make([]byte, 1500)
 			for {
+				select {
+				case <-rtcpCtx.Done():
+					return
+				default:
+				}
 				if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
 					return
 				}
@@ -491,99 +506,51 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 	}
 
 	if useCustomAllocation {
-		s.log.Infof("Updated bitrate to %d bps using custom allocation", targetBitrate)
+		s.log.Debugf("Updated bitrate to %d bps using custom allocation", targetBitrate)
 	} else {
-		s.log.Infof("Updated bitrate to %d bps (%d per track)", targetBitrate, equalShare)
+		s.log.Debugf("Updated bitrate to %d bps (%d per track)", targetBitrate, equalShare)
 	}
 }
 
 // processEncodedFrames reads and sends encoded frames for all tracks.
+// Read() is non-blocking (returns ErrNoFrameAvailable immediately when no frame is ready),
+// so sequential iteration is sufficient and avoids goroutine scheduling overhead.
 func (s *RTCSender) processEncodedFrames() {
-	s.tracksMu.RLock()
+	s.tracksMu.Lock()
+	defer s.tracksMu.Unlock()
 
-	totalTracks := len(s.tracks)
-	if totalTracks == 0 {
-		s.tracksMu.RUnlock()
-
+	if len(s.tracks) == 0 {
 		return
 	}
 
-	// Process tracks in parallel to reduce total processing time
-	var wg sync.WaitGroup
-	results := make(chan trackResult, totalTracks)
-
-	// Start parallel processing for each track
-	for trackID, track := range s.tracks {
-		wg.Add(1)
-		go func(trackID string, track *EncodedTrack) {
-			defer wg.Done()
-
-			result := trackResult{
-				trackID: trackID,
-				success: false,
-			}
-
-			// Try to read an encoded frame (non-blocking)
-			encoded, release, err := track.encodedReader.Read()
-			if err != nil {
-				result.error = err
-				results <- result
-
-				return
-			}
-
-			// Track the actual bitrate
-			track.bitrateTracker.AddFrame(len(encoded.Data), time.Now())
-
-			// Send to WebRTC track
-			err = track.videoTrack.WriteSample(media.Sample{
-				Data:     encoded.Data,
-				Duration: time.Second / 10, // Assuming 10fps
-			})
-
-			release()
-
-			result.success = true
-			result.error = err
-			results <- result
-		}(trackID, track)
-	}
-
-	// Wait for all tracks to complete
-	wg.Wait()
-	close(results)
-
-	// Release read lock now that all goroutines are done accessing tracks
-	s.tracksMu.RUnlock()
-
-	// Process results and determine noEncodedFrame status
 	allHaveErrors := true
-	for result := range results {
-		if result.error != nil {
-			// ErrNoFrameAvailable is expected during normal operation (timing gaps between frames)
-			// Log it at Debug level to reduce noise; other errors remain at Error level
-			if errors.Is(result.error, ErrNoFrameAvailable) {
-				s.log.Debugf("No frame available for track %s", result.trackID)
-			} else {
-				s.log.Errorf("Error processing track %s: %v", result.trackID, result.error)
+	for trackID, track := range s.tracks {
+		// Try to read an encoded frame (non-blocking)
+		encoded, release, err := track.encodedReader.Read()
+		if err != nil {
+			if !errors.Is(err, ErrNoFrameAvailable) {
+				s.log.Errorf("Error processing track %s: %v", trackID, err)
 			}
-		} else {
-			// At least one result has no error
-			allHaveErrors = false
+
+			continue
 		}
+
+		// Track the actual bitrate
+		track.bitrateTracker.AddFrame(len(encoded.Data), time.Now())
+
+		// Send to WebRTC track
+		if writeErr := track.videoTrack.WriteSample(media.Sample{
+			Data:     encoded.Data,
+			Duration: time.Second / 10, // Assuming 10fps
+		}); writeErr != nil {
+			s.log.Errorf("Error writing sample for track %s: %v", trackID, writeErr)
+		}
+
+		release()
+		allHaveErrors = false
 	}
 
-	// Update noEncodedFrame: true if all results have errors, false otherwise
-	s.tracksMu.Lock()
 	s.noEncodedFrame = allHaveErrors
-	s.tracksMu.Unlock()
-}
-
-// trackResult holds the result of processing a single track.
-type trackResult struct {
-	trackID string
-	success bool
-	error   error
 }
 
 // SetBitrateAllocation sets custom bitrate allocation for tracks.
@@ -687,6 +654,12 @@ func (s *RTCSender) recreateEncoder(track *EncodedTrack) error {
 
 // Close releases all resources.
 func (s *RTCSender) Close() error {
+	// Cancel RTCP reader goroutines before closing the peer connection.
+	if s.rtcpCancel != nil {
+		s.rtcpCancel()
+		s.rtcpCancel = nil
+	}
+
 	s.tracksMu.Lock()
 	defer s.tracksMu.Unlock()
 
