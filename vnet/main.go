@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/pion/logging"
-	"github.com/pion/transport/v3/vnet"
 )
 
 // senderMode defines the type of sender to use in the test.
@@ -95,7 +94,7 @@ func main() {
 			flowMode:          singleFlowMode,
 			videoFile:         videoFilesArray, // Use command line parameter (comma-separated list)
 			phaseFile:         "phases/quick_test.json",
-			referenceCapacity: 2 * vnet.MBit,
+			referenceCapacity: 2 * MBit,
 			trackCount:        2,
 		},
 	}
@@ -282,27 +281,27 @@ func (r *Runner) startSender(ctx context.Context, flow Flow) {
 
 func (r *Runner) setSingleFlowPathCharacteristics() {
 	r.pathCharacteristics = pathCharacteristics{
-		referenceCapacity: 1 * vnet.MBit,
+		referenceCapacity: 1 * MBit,
 		phases: []phase{
 			{
 				duration:      40 * time.Second,
 				capacityRatio: 1.0,
-				maxBurst:      160 * vnet.KBit,
+				maxBurst:      160 * KBit,
 			},
 			{
 				duration:      20 * time.Second,
 				capacityRatio: 2.5,
-				maxBurst:      160 * vnet.KBit,
+				maxBurst:      160 * KBit,
 			},
 			{
 				duration:      20 * time.Second,
 				capacityRatio: 0.6,
-				maxBurst:      160 * vnet.KBit,
+				maxBurst:      160 * KBit,
 			},
 			{
 				duration:      20 * time.Second,
 				capacityRatio: 1.0,
-				maxBurst:      160 * vnet.KBit,
+				maxBurst:      160 * KBit,
 			},
 		},
 	}
@@ -372,32 +371,32 @@ func (r *Runner) runStandardMultipleFlows(nm *NetworkManager, dataDir string) er
 
 func (r *Runner) setMultipleFlowsPathCharacteristics() {
 	r.pathCharacteristics = pathCharacteristics{
-		referenceCapacity: 1 * vnet.MBit,
+		referenceCapacity: 1 * MBit,
 		phases: []phase{
 			{
 				duration:      25 * time.Second,
 				capacityRatio: 2.0,
-				maxBurst:      160 * vnet.KBit,
+				maxBurst:      160 * KBit,
 			},
 			{
 				duration:      25 * time.Second,
 				capacityRatio: 1.0,
-				maxBurst:      160 * vnet.KBit,
+				maxBurst:      160 * KBit,
 			},
 			{
 				duration:      25 * time.Second,
 				capacityRatio: 1.75,
-				maxBurst:      160 * vnet.KBit,
+				maxBurst:      160 * KBit,
 			},
 			{
 				duration:      25 * time.Second,
 				capacityRatio: 0.5,
-				maxBurst:      160 * vnet.KBit,
+				maxBurst:      160 * KBit,
 			},
 			{
 				duration:      25 * time.Second,
 				capacityRatio: 1.0,
-				maxBurst:      160 * vnet.KBit,
+				maxBurst:      160 * KBit,
 			},
 		},
 	}

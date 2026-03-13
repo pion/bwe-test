@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pion/transport/v3/vnet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -77,7 +76,7 @@ func TestGetPathCharacteristics_ValidFile(t *testing.T) {
 	phase1 := result.phases[0]
 	assert.Equal(t, 10*time.Second, phase1.duration, "Phase 1 duration should be 10 seconds")
 	assert.Equal(t, 50.0, phase1.capacityRatio, "Phase 1 capacity ratio should be 50.0")
-	assert.Equal(t, 100*vnet.KBit, phase1.maxBurst, "Phase 1 max burst should be 100 KBit")
+	assert.Equal(t, 100*KBit, phase1.maxBurst, "Phase 1 max burst should be 100 KBit")
 	assert.Equal(t, 5, phase1.dataLossRate, "Phase 1 data loss rate should be 5")
 	assert.Equal(t, 2, phase1.ackLossRate, "Phase 1 ack loss rate should be 2")
 	assert.Equal(t, 50*time.Millisecond, phase1.dataDelay, "Phase 1 data delay should be 50ms")
@@ -87,7 +86,7 @@ func TestGetPathCharacteristics_ValidFile(t *testing.T) {
 	phase2 := result.phases[1]
 	assert.Equal(t, 20*time.Second, phase2.duration, "Phase 2 duration should be 20 seconds")
 	assert.Equal(t, 75.0, phase2.capacityRatio, "Phase 2 capacity ratio should be 75.0")
-	assert.Equal(t, 150*vnet.KBit, phase2.maxBurst, "Phase 2 max burst should be 150 KBit")
+	assert.Equal(t, 150*KBit, phase2.maxBurst, "Phase 2 max burst should be 150 KBit")
 	assert.Equal(t, 3, phase2.dataLossRate, "Phase 2 data loss rate should be 3")
 	assert.Equal(t, 1, phase2.ackLossRate, "Phase 2 ack loss rate should be 1")
 	assert.Equal(t, 30*time.Millisecond, phase2.dataDelay, "Phase 2 data delay should be 30ms")
@@ -394,7 +393,7 @@ func TestPhaseJSON_ConvertToPhase(t *testing.T) {
 
 	assert.Equal(t, 15*time.Second, convertedPhase.duration, "Duration should be converted correctly")
 	assert.Equal(t, 75.5, convertedPhase.capacityRatio, "Capacity ratio should be preserved")
-	assert.Equal(t, 200*vnet.KBit, convertedPhase.maxBurst, "Max burst should be converted to bits")
+	assert.Equal(t, 200*KBit, convertedPhase.maxBurst, "Max burst should be converted to bits")
 	assert.Equal(t, 8, convertedPhase.dataLossRate, "Data loss rate should be preserved")
 	assert.Equal(t, 3, convertedPhase.ackLossRate, "Ack loss rate should be preserved")
 	assert.Equal(t, 75*time.Millisecond, convertedPhase.dataDelay, "Data delay should be converted to duration")
@@ -416,7 +415,7 @@ func TestPhaseJSON_ToPhase_ValidData(t *testing.T) {
 	require.NoError(t, err, "toPhase() should not error on valid data")
 	assert.Equal(t, 10*time.Second, validatedPhase.duration, "Duration should be converted correctly")
 	assert.Equal(t, 50.0, validatedPhase.capacityRatio, "Capacity ratio should be preserved")
-	assert.Equal(t, 100*vnet.KBit, validatedPhase.maxBurst, "Max burst should be converted to bits")
+	assert.Equal(t, 100*KBit, validatedPhase.maxBurst, "Max burst should be converted to bits")
 	assert.Equal(t, 5, validatedPhase.dataLossRate, "Data loss rate should be preserved")
 	assert.Equal(t, 2, validatedPhase.ackLossRate, "Ack loss rate should be preserved")
 	assert.Equal(t, 50*time.Millisecond, validatedPhase.dataDelay, "Data delay should be converted to duration")

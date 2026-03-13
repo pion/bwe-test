@@ -16,8 +16,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/pion/transport/v3/vnet"
 )
 
 // pathCharacteristics defines the network characteristics for the test.
@@ -180,7 +178,7 @@ func (pj phaseJSON) convertToPhase() phase {
 	return phase{
 		duration:      time.Duration(pj.DurationSeconds) * time.Second,
 		capacityRatio: pj.CapacityRatio,
-		maxBurst:      pj.MaxBurstKbps * vnet.KBit,
+		maxBurst:      pj.MaxBurstKbps * KBit,
 		dataLossRate:  pj.DataLossRate,
 		ackLossRate:   pj.AckLossRate,
 		dataDelay:     time.Duration(pj.DataDelayMs) * time.Millisecond,
