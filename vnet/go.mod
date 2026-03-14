@@ -10,7 +10,7 @@ require (
 	github.com/pion/mediadevices v0.9.4
 	github.com/pion/transport/v4 v4.0.1
 	github.com/stretchr/testify v1.11.1
-	gocv.io/x/gocv v0.31.0
+	gocv.io/x/gocv v0.43.0
 )
 
 require (
