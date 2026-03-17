@@ -60,6 +60,12 @@ type EncodedTrack struct {
 	mimeType       string
 }
 
+// EncodedFrameCallback is called after each VP8 frame is encoded with the
+// track ID, encoded data, and whether it's a keyframe. Callers can use this
+// to route encoded frames to a ring buffer or other sink without a second
+// encode pass.
+type EncodedFrameCallback func(trackID string, data []byte, isKeyframe bool)
+
 // RTCSender is a generic sender that can work with any frame source.
 type RTCSender struct {
 	// WebRTC components
@@ -87,9 +93,20 @@ type RTCSender struct {
 	// Cancel function for RTCP reader goroutines. Replaced on each SetupPeerConnection.
 	rtcpCancel context.CancelFunc
 
+	// Optional callback invoked after each VP8 frame is encoded.
+	onEncodedFrame EncodedFrameCallback
+
 	// Logging
 	ccLogWriter io.Writer
 	log         logging.LeveledLogger
+}
+
+// SetOnEncodedFrame registers a callback invoked after each VP8 frame is
+// encoded and sent to the WebRTC track. Thread-safe (called under tracksMu).
+func (s *RTCSender) SetOnEncodedFrame(cb EncodedFrameCallback) {
+	s.tracksMu.Lock()
+	defer s.tracksMu.Unlock()
+	s.onEncodedFrame = cb
 }
 
 // NewRTCSender creates a new generic sender with GCC bandwidth estimation by default.
@@ -544,6 +561,12 @@ func (s *RTCSender) processEncodedFrames() {
 			Duration: time.Second / 10, // Assuming 10fps
 		}); writeErr != nil {
 			s.log.Errorf("Error writing sample for track %s: %v", trackID, writeErr)
+		}
+
+		// Notify callback with the encoded frame (e.g. for ring buffer).
+		if s.onEncodedFrame != nil {
+			isKey := len(encoded.Data) > 0 && (encoded.Data[0]&0x01) == 0 // VP8 keyframe bit
+			s.onEncodedFrame(trackID, encoded.Data, isKey)
 		}
 
 		release()
