@@ -100,6 +100,10 @@ func main() {
 	// ================== DIRECT FRAME FEEDING ==================
 	startFrameFeeding(ctx, rtcSender, width, height, logger)
 
+	// ================== FORCE KEYFRAME ==================
+	// Periodically force a keyframe (e.g. after a new viewer joins or packet loss is detected).
+	startPeriodicKeyFrame(ctx, rtcSender, "realtime-video", logger)
+
 	// ================== SIGNALING ==================
 	startSignaling(rtcSender, cancel, logger)
 
@@ -139,6 +143,34 @@ func startFrameFeeding(
 					logger.Error(fmt.Sprintf("Error pushing frame: %v", err))
 				}
 				frameCounter++
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+// startPeriodicKeyFrame demonstrates forcing keyframes at a regular interval.
+// In practice you would call ForceKeyFrame in response to events such as a PLI
+// (Picture Loss Indication) from a receiver or when a new viewer subscribes.
+func startPeriodicKeyFrame(
+	ctx context.Context,
+	rtcSender *sender.RTCSender,
+	trackID string,
+	logger logging.LeveledLogger,
+) {
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := rtcSender.ForceKeyFrame(trackID); err != nil {
+					logger.Error(fmt.Sprintf("ForceKeyFrame failed: %v", err))
+				} else {
+					logger.Info("Forced keyframe on " + trackID)
+				}
 			case <-ctx.Done():
 				return
 			}
