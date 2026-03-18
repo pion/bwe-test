@@ -20,6 +20,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var errEncoderBusy = errors.New("encoder busy")
+
 // MockVideoEncoderBuilder for testing.
 type MockVideoEncoderBuilder struct{}
 
@@ -493,14 +495,13 @@ func TestRTCSender_ForceKeyFrame_EncoderError(t *testing.T) {
 	sender, err := NewRTCSender()
 	require.NoError(t, err)
 
-	encoderErr := errors.New("encoder busy")
 	sender.tracks["test-track"] = &EncodedTrack{
-		encodedReader: &MockKeyFrameReadCloser{forceKeyFrameErr: encoderErr},
+		encodedReader: &MockKeyFrameReadCloser{forceKeyFrameErr: errEncoderBusy},
 	}
 
 	err = sender.ForceKeyFrame("test-track")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, encoderErr)
+	assert.ErrorIs(t, err, errEncoderBusy)
 }
 
 func TestStaticErrors(t *testing.T) {
