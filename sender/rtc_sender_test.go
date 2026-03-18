@@ -7,10 +7,12 @@
 package sender
 
 import (
+	"errors"
 	"image"
 	"testing"
 	"time"
 
+	"github.com/pion/mediadevices"
 	"github.com/pion/mediadevices/pkg/codec"
 	"github.com/pion/mediadevices/pkg/io/video"
 	"github.com/pion/mediadevices/pkg/prop"
@@ -413,6 +415,94 @@ func TestRTCSender_Close_CancelsRTCP(t *testing.T) {
 	assert.Nil(t, sender.rtcpCancel, "rtcpCancel should be nil after Close")
 }
 
+// MockKeyFrameReadCloser is a mock EncodedReadCloser whose controller
+// implements codec.KeyFrameController.
+type MockKeyFrameReadCloser struct {
+	forceKeyFrameErr error
+}
+
+func (m *MockKeyFrameReadCloser) Read() (mediadevices.EncodedBuffer, func(), error) {
+	return mediadevices.EncodedBuffer{}, func() {}, nil
+}
+
+func (m *MockKeyFrameReadCloser) Close() error { return nil }
+
+func (m *MockKeyFrameReadCloser) Controller() codec.EncoderController {
+	return &mockKeyFrameController{err: m.forceKeyFrameErr}
+}
+
+type mockKeyFrameController struct {
+	err error
+}
+
+func (c *mockKeyFrameController) ForceKeyFrame() error {
+	return c.err
+}
+
+// MockNoKeyFrameReadCloser is a mock EncodedReadCloser whose controller
+// does NOT implement codec.KeyFrameController.
+type MockNoKeyFrameReadCloser struct{}
+
+func (m *MockNoKeyFrameReadCloser) Read() (mediadevices.EncodedBuffer, func(), error) {
+	return mediadevices.EncodedBuffer{}, func() {}, nil
+}
+
+func (m *MockNoKeyFrameReadCloser) Close() error { return nil }
+
+func (m *MockNoKeyFrameReadCloser) Controller() codec.EncoderController {
+	return nil
+}
+
+func TestRTCSender_ForceKeyFrame_TrackNotFound(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+
+	err = sender.ForceKeyFrame("non-existent")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTrackNotFound)
+}
+
+func TestRTCSender_ForceKeyFrame_NotSupported(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+
+	// Manually inject a track with an encoder that doesn't support KeyFrameController
+	sender.tracks["test-track"] = &EncodedTrack{
+		encodedReader: &MockNoKeyFrameReadCloser{},
+	}
+
+	err = sender.ForceKeyFrame("test-track")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrForceKeyFrameNotSupported)
+}
+
+func TestRTCSender_ForceKeyFrame_Success(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+
+	// Manually inject a track with an encoder that supports KeyFrameController
+	sender.tracks["test-track"] = &EncodedTrack{
+		encodedReader: &MockKeyFrameReadCloser{forceKeyFrameErr: nil},
+	}
+
+	err = sender.ForceKeyFrame("test-track")
+	assert.NoError(t, err)
+}
+
+func TestRTCSender_ForceKeyFrame_EncoderError(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+
+	encoderErr := errors.New("encoder busy")
+	sender.tracks["test-track"] = &EncodedTrack{
+		encodedReader: &MockKeyFrameReadCloser{forceKeyFrameErr: encoderErr},
+	}
+
+	err = sender.ForceKeyFrame("test-track")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, encoderErr)
+}
+
 func TestStaticErrors(t *testing.T) {
 	// Test that all static errors are properly defined
 	assert.NotNil(t, ErrTrackAlreadyExists)
@@ -421,6 +511,7 @@ func TestStaticErrors(t *testing.T) {
 	assert.NotNil(t, ErrInvalidNegativeValue)
 	assert.NotNil(t, ErrAllocationSumMustBePositive)
 	assert.NotNil(t, ErrFailedToCastVideoTrack)
+	assert.NotNil(t, ErrForceKeyFrameNotSupported)
 
 	// Test error messages
 	assert.Contains(t, ErrTrackAlreadyExists.Error(), "already exists")
