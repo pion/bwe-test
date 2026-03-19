@@ -37,6 +37,7 @@ var (
 	ErrAllocationSumMustBePositive = errors.New("sum of allocation values must be greater than 0")
 	ErrFailedToCastVideoTrack      = errors.New("failed to cast media track to VideoTrack")
 	ErrMissingEncoderConfig        = errors.New("either EncoderBuilder or InitialBitrate must be provided")
+	ErrForceKeyFrameNotSupported   = errors.New("encoder does not support ForceKeyFrame")
 )
 
 // VideoTrackInfo holds information about a video track.
@@ -673,6 +674,23 @@ func (s *RTCSender) recreateEncoder(track *EncodedTrack) error {
 	track.encodedReader = encodedReader
 
 	return nil
+}
+
+// ForceKeyFrame forces the next frame for the given track to be a keyframe.
+func (s *RTCSender) ForceKeyFrame(trackID string) error {
+	s.tracksMu.RLock()
+	defer s.tracksMu.RUnlock()
+
+	track, ok := s.tracks[trackID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrTrackNotFound, trackID)
+	}
+
+	if kfc, ok := track.encodedReader.Controller().(codec.KeyFrameController); ok {
+		return kfc.ForceKeyFrame()
+	}
+
+	return fmt.Errorf("%w: %s", ErrForceKeyFrameNotSupported, trackID)
 }
 
 // Close releases all resources.
