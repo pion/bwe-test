@@ -2,7 +2,7 @@ module github.com/pion/bwe-test/vnet
 
 go 1.24.0
 
-toolchain go1.24.8
+toolchain go1.26.1
 
 require (
 	github.com/pion/bwe-test v0.0.0-00010101000000-000000000000
