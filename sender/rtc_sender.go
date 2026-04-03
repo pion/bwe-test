@@ -530,51 +530,91 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 	}
 }
 
-// processEncodedFrames reads and sends encoded frames for all tracks.
-// Read() is non-blocking (returns ErrNoFrameAvailable immediately when no frame is ready),
-// so sequential iteration is sufficient and avoids goroutine scheduling overhead.
-func (s *RTCSender) processEncodedFrames() {
-	s.tracksMu.Lock()
-	defer s.tracksMu.Unlock()
+// encodeAndSendTrack reads, encodes, and sends a single track's frame.
+// Returns true if a frame was successfully processed, or an error.
+func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (bool, error) {
+	// Read includes VP8 encode — this is the expensive call.
+	encoded, release, err := track.encodedReader.Read()
+	if err != nil {
+		return false, err
+	}
 
-	if len(s.tracks) == 0 {
+	track.bitrateTracker.AddFrame(len(encoded.Data), time.Now())
+
+	if writeErr := track.videoTrack.WriteSample(media.Sample{
+		Data:     encoded.Data,
+		Duration: time.Second / 10,
+	}); writeErr != nil {
+		s.log.Errorf("Error writing sample for track %s: %v", trackID, writeErr)
+	}
+
+	if s.onEncodedFrame != nil {
+		isKey := len(encoded.Data) > 0 && (encoded.Data[0]&0x01) == 0
+		s.onEncodedFrame(trackID, encoded.Data, isKey)
+	}
+
+	release()
+
+	return true, nil
+}
+
+// processEncodedFrames reads and sends encoded frames for all tracks.
+// Encoding happens in parallel (one goroutine per track) because
+// encodedReader.Read() includes VP8 encoding via vpx_codec_encode(),
+// which takes ~5-10ms per 640x480 frame. Sequential iteration would
+// serialize 14 encodes into ~70-140ms, exceeding the 100ms tick interval.
+func (s *RTCSender) processEncodedFrames() {
+	s.tracksMu.RLock()
+
+	totalTracks := len(s.tracks)
+	if totalTracks == 0 {
+		s.tracksMu.RUnlock()
+
 		return
 	}
 
-	allHaveErrors := true
-	for trackID, track := range s.tracks {
-		// Try to read an encoded frame (non-blocking)
-		encoded, release, err := track.encodedReader.Read()
-		if err != nil {
-			if !errors.Is(err, ErrNoFrameAvailable) {
-				s.log.Errorf("Error processing track %s: %v", trackID, err)
-			}
-
-			continue
-		}
-
-		// Track the actual bitrate
-		track.bitrateTracker.AddFrame(len(encoded.Data), time.Now())
-
-		// Send to WebRTC track
-		if writeErr := track.videoTrack.WriteSample(media.Sample{
-			Data:     encoded.Data,
-			Duration: time.Second / 10, // Assuming 10fps
-		}); writeErr != nil {
-			s.log.Errorf("Error writing sample for track %s: %v", trackID, writeErr)
-		}
-
-		// Notify callback with the encoded frame (e.g. for ring buffer).
-		if s.onEncodedFrame != nil {
-			isKey := len(encoded.Data) > 0 && (encoded.Data[0]&0x01) == 0 // VP8 keyframe bit
-			s.onEncodedFrame(trackID, encoded.Data, isKey)
-		}
-
-		release()
-		allHaveErrors = false
+	type trackResult struct {
+		hasFrame bool
+		err      error
 	}
 
+	var wg sync.WaitGroup
+	results := make([]trackResult, totalTracks)
+	i := 0
+
+	for trackID, track := range s.tracks {
+		idx := i
+		i++
+		wg.Add(1)
+
+		go func(trackID string, track *EncodedTrack) {
+			defer wg.Done()
+
+			hasFrame, err := s.encodeAndSendTrack(trackID, track)
+			results[idx] = trackResult{hasFrame: hasFrame, err: err}
+		}(trackID, track)
+	}
+
+	wg.Wait()
+	s.tracksMu.RUnlock()
+
+	allHaveErrors := true
+
+	for _, r := range results {
+		if r.hasFrame {
+			allHaveErrors = false
+
+			break
+		}
+
+		if r.err != nil && !errors.Is(r.err, ErrNoFrameAvailable) {
+			s.log.Errorf("Error processing track: %v", r.err)
+		}
+	}
+
+	s.tracksMu.Lock()
 	s.noEncodedFrame = allHaveErrors
+	s.tracksMu.Unlock()
 }
 
 // SetBitrateAllocation sets custom bitrate allocation for tracks.
