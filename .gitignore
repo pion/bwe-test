@@ -15,10 +15,6 @@ bin/
 vendor/
 node_modules/
 
-### Binaries ###
-################
-vnet/vnet
-
 ### Files ###
 #############
 *.ivf
