@@ -1,5 +1,4 @@
 //go:build !js
-// +build !js
 
 // SPDX-FileCopyrightText: 2026 The Pion community <https://pion.ly>
 // SPDX-License-Identifier: MIT
@@ -263,8 +262,8 @@ func createAnimatedTestImage(width, height, frame int) image.Image {
 	// Create an animated pattern that changes with frame number
 	offset := frame % 255
 
-	for yPos := 0; yPos < height; yPos++ {
-		for xPos := 0; xPos < width; xPos++ {
+	for yPos := range height {
+		for xPos := range width {
 			// Safe conversion to avoid overflow warnings
 			rVal := ((xPos + offset) * 255) / width
 			gVal := ((yPos + offset) * 255) / height

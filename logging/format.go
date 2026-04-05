@@ -32,7 +32,7 @@ func (f *RTPFormatter) RTPFormat(pkt *rtp.Packet, _ interceptor.Attributes) ([]b
 		twccNr = twcc.TransportSequence
 	}
 
-	return []byte(fmt.Sprintf("%v, %v, %v, %v, %v, %v, %v, %v, %v\n",
+	return fmt.Appendf(nil, "%v, %v, %v, %v, %v, %v, %v, %v, %v\n",
 		time.Now().UnixMilli(),
 		pkt.PayloadType,
 		pkt.SSRC,
@@ -42,7 +42,7 @@ func (f *RTPFormatter) RTPFormat(pkt *rtp.Packet, _ interceptor.Attributes) ([]b
 		pkt.MarshalSize(),
 		twccNr,
 		unwrappedSeqNr,
-	)), nil
+	), nil
 }
 
 // RTCPFormat formats a single RTCP packet as a binary byte slice for logging.
@@ -56,5 +56,5 @@ func RTCPFormat(pkt rtcp.Packet, _ interceptor.Attributes) ([]byte, error) {
 		size = len(*feedback)
 	}
 
-	return []byte(fmt.Sprintf("%v, %v\n", now, size)), nil
+	return fmt.Appendf(nil, "%v, %v\n", now, size), nil
 }
