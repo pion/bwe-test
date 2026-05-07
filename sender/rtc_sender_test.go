@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pion/interceptor/pkg/stats"
 	"github.com/pion/mediadevices"
 	"github.com/pion/mediadevices/pkg/codec"
 	"github.com/pion/mediadevices/pkg/io/video"
@@ -18,6 +19,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// mockStatsGetter implements stats.Getter for unit tests so GetTrackStats
+// can be exercised without real RTP/RTCP traffic.
+type mockStatsGetter struct {
+	stats *stats.Stats
+}
+
+func (m *mockStatsGetter) Get(uint32) *stats.Stats { return m.stats }
 
 var errEncoderBusy = errors.New("encoder busy")
 
@@ -517,4 +526,171 @@ func TestStaticErrors(t *testing.T) {
 	assert.Contains(t, ErrTrackAlreadyExists.Error(), "already exists")
 	assert.Contains(t, ErrTrackNotFound.Error(), "not found")
 	assert.Contains(t, ErrInvalidNegativeValue.Error(), "non-negative")
+}
+
+func TestRTCSender_GetTrackStats_NonExistentTrack(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	stats := sender.GetTrackStats("missing-track")
+	assert.Nil(t, stats, "GetTrackStats should return nil for missing track")
+}
+
+func TestRTCSender_GetTrackStats_BeforePeerConnection(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	err = sender.AddVideoTrack(VideoTrackInfo{
+		TrackID:        "cam-0",
+		Width:          640,
+		Height:         480,
+		EncoderBuilder: &MockVideoEncoderBuilder{},
+	})
+	require.NoError(t, err)
+
+	// Without a peer connection there is no rtpSender and the stats Getter
+	// is unset. GetTrackStats should still return a populated struct with
+	// just the pipeline counters (all zero before any frame is encoded).
+	stats := sender.GetTrackStats("cam-0")
+	require.NotNil(t, stats)
+	assert.Equal(t, uint64(0), stats.FramesEncoded)
+	assert.Equal(t, uint64(0), stats.TotalEncodeTimeNs)
+	assert.Equal(t, uint64(0), stats.TotalSendQueueTimeNs)
+	assert.Equal(t, uint64(0), stats.PacketsSent)
+	assert.Equal(t, uint64(0), stats.RoundTripTimeMeasurements)
+	assert.Equal(t, time.Duration(0), stats.RoundTripTime)
+}
+
+func TestRTCSender_GetTrackStats_PipelineCountersIncrement(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	err = sender.AddVideoTrack(VideoTrackInfo{
+		TrackID:        "cam-0",
+		Width:          640,
+		Height:         480,
+		InitialBitrate: 500_000,
+	})
+	require.NoError(t, err)
+
+	// Drive a frame through the encoder so encodeAndSendTrack updates the
+	// per-track atomic counters that GetTrackStats reports.
+	testImg := image.NewYCbCr(image.Rect(0, 0, 640, 480), image.YCbCrSubsampleRatio420)
+	require.NoError(t, sender.SendFrame("cam-0", testImg))
+	time.Sleep(150 * time.Millisecond)
+	sender.processEncodedFrames()
+
+	stats := sender.GetTrackStats("cam-0")
+	require.NotNil(t, stats)
+	assert.Positive(t, stats.FramesEncoded,
+		"FramesEncoded should increment after a frame is encoded")
+	// Encode and send-queue time can be 0 on a very fast machine but never
+	// negative; just verify they're sensible uint64 values.
+	assert.GreaterOrEqual(t, stats.TotalEncodeTimeNs, uint64(0))
+	assert.GreaterOrEqual(t, stats.TotalSendQueueTimeNs, uint64(0))
+}
+
+func TestRTCSender_GetTrackStats_WithPeerConnection(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	err = sender.AddVideoTrack(VideoTrackInfo{
+		TrackID:        "cam-0",
+		Width:          640,
+		Height:         480,
+		EncoderBuilder: &MockVideoEncoderBuilder{},
+	})
+	require.NoError(t, err)
+
+	// SetupPeerConnection wires the rtpSender on the EncodedTrack and lets
+	// the stats interceptor's OnNewPeerConnection callback populate the
+	// statsGetter. With no actual ICE/DTLS established the network counters
+	// stay at zero, but GetTrackStats should still resolve the SSRC path
+	// without nil-deref.
+	require.NoError(t, sender.SetupPeerConnection())
+
+	stats := sender.GetTrackStats("cam-0")
+	require.NotNil(t, stats)
+	// Pipeline counters: still zero, no frames encoded yet.
+	assert.Equal(t, uint64(0), stats.FramesEncoded)
+	// Network counters: zero because no traffic has flowed.
+	assert.Equal(t, uint64(0), stats.PacketsSent)
+	assert.Equal(t, uint64(0), stats.RoundTripTimeMeasurements)
+}
+
+func TestRTCSender_GetTrackStats_PopulatesNetworkCounters(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	err = sender.AddVideoTrack(VideoTrackInfo{
+		TrackID:        "cam-0",
+		Width:          640,
+		Height:         480,
+		EncoderBuilder: &MockVideoEncoderBuilder{},
+	})
+	require.NoError(t, err)
+
+	// Setting up the peer connection wires the rtpSender on the track,
+	// which is required for the SSRC resolution path inside GetTrackStats.
+	require.NoError(t, sender.SetupPeerConnection())
+
+	// Inject a mock Getter with canned values. This bypasses the need to
+	// drive real RTP/RTCP traffic and exercises the field-copy path.
+	sender.statsGetterMu.Lock()
+	sender.statsGetter = &mockStatsGetter{
+		stats: &stats.Stats{
+			OutboundRTPStreamStats: stats.OutboundRTPStreamStats{
+				SentRTPStreamStats: stats.SentRTPStreamStats{
+					PacketsSent: 1234,
+					BytesSent:   567890,
+				},
+				HeaderBytesSent: 7000,
+				NACKCount:       2,
+				PLICount:        1,
+			},
+			RemoteInboundRTPStreamStats: stats.RemoteInboundRTPStreamStats{
+				ReceivedRTPStreamStats: stats.ReceivedRTPStreamStats{
+					PacketsReceived: 1200,
+					PacketsLost:     34,
+					Jitter:          0.5,
+				},
+				FractionLost:              0.025,
+				RoundTripTime:             40 * time.Millisecond,
+				TotalRoundTripTime:        4 * time.Second,
+				RoundTripTimeMeasurements: 100,
+			},
+		},
+	}
+	sender.statsGetterMu.Unlock()
+
+	got := sender.GetTrackStats("cam-0")
+	require.NotNil(t, got)
+
+	assert.Equal(t, uint64(1234), got.PacketsSent)
+	assert.Equal(t, uint64(567890), got.BytesSent)
+	assert.Equal(t, uint64(7000), got.HeaderBytesSent)
+	assert.Equal(t, uint32(2), got.NACKCount)
+	assert.Equal(t, uint32(1), got.PLICount)
+
+	assert.Equal(t, uint64(1200), got.PacketsReceived)
+	assert.Equal(t, int64(34), got.PacketsLost)
+	assert.InDelta(t, 0.5, got.Jitter, 0.0001)
+	assert.InDelta(t, 0.025, got.FractionLost, 0.0001)
+	assert.Equal(t, 40*time.Millisecond, got.RoundTripTime)
+	assert.Equal(t, 4*time.Second, got.TotalRoundTripTime)
+	assert.Equal(t, uint64(100), got.RoundTripTimeMeasurements)
+}
+
+func TestTrackStats_ZeroValueIsValid(t *testing.T) {
+	// Consumers may compare TrackStats values directly to compute deltas
+	// across windows. Verify the zero value is well-defined and usable.
+	var s TrackStats
+	assert.Equal(t, uint64(0), s.FramesEncoded)
+	assert.Equal(t, time.Duration(0), s.RoundTripTime)
+	assert.Equal(t, uint64(0), s.RoundTripTimeMeasurements)
 }

@@ -12,11 +12,14 @@ import (
 	"image"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
 	"github.com/pion/interceptor/pkg/gcc"
+	"github.com/pion/interceptor/pkg/report"
+	"github.com/pion/interceptor/pkg/stats"
 	"github.com/pion/logging"
 	"github.com/pion/mediadevices"
 	"github.com/pion/mediadevices/pkg/codec"
@@ -58,6 +61,16 @@ type EncodedTrack struct {
 	videoSource    VideoSource
 	bitrateTracker *codec.BitrateTracker
 	mimeType       string
+
+	// rtpSender is set after AddTrack and used to look up the SSRC when
+	// resolving network stats from the Pion stats interceptor.
+	rtpSender *webrtc.RTPSender
+
+	// Per-frame timing counters used by GetTrackStats. Updated atomically by
+	// the encode goroutine in encodeAndSendTrack.
+	framesEncoded        atomic.Uint64
+	totalEncodeTimeNs    atomic.Uint64
+	totalSendQueueTimeNs atomic.Uint64
 }
 
 // EncodedFrameCallback is called after each VP8 frame is encoded with the
@@ -95,6 +108,12 @@ type RTCSender struct {
 
 	// Optional callback invoked after each VP8 frame is encoded.
 	onEncodedFrame EncodedFrameCallback
+
+	// statsGetter is populated by the Pion stats interceptor's
+	// OnNewPeerConnection callback. Used by GetTrackStats to read RTP/RTCP
+	// counters (PacketsSent, RoundTripTime) per SSRC.
+	statsGetter   stats.Getter
+	statsGetterMu sync.RWMutex
 
 	// Logging
 	ccLogWriter io.Writer
@@ -134,6 +153,12 @@ func NewRTCSender(opts ...Option) (*RTCSender, error) {
 		return nil, err
 	}
 
+	// Register the stats interceptor so GetTrackStats can return RTP/RTCP
+	// counters (PacketsSent, RoundTripTime) per track.
+	if err := sender.setupStats(); err != nil {
+		return nil, err
+	}
+
 	// Apply options directly to RTCSender
 	for _, opt := range opts {
 		if err := opt(sender); err != nil {
@@ -169,6 +194,124 @@ func (s *RTCSender) setupGCC(initialBitrate int) error {
 	s.mediaEngine.RegisterFeedback(webrtc.RTCPFeedback{Type: transportCCRtcpfb}, webrtc.RTPCodecTypeAudio)
 
 	return nil
+}
+
+// setupStats registers the Pion stats interceptor and a sender-report
+// interceptor so RTP outbound counters and RTCP-derived RTT are recorded
+// per SSRC.
+//
+// Registration order matters: stats must be added BEFORE senderReports.
+// Pion's interceptor chain wraps the transport writer in registration
+// order, and each interceptor stores the writer passed into its own
+// BindRTCPWriter to emit RTCP. If senderReports were registered first, it
+// would store the bare transport writer, and the SR packets it generates
+// would bypass the stats recorder — leaving lastSenderReports empty and
+// silently disabling RTT extraction in RemoteInboundRTPStreamStats.
+func (s *RTCSender) setupStats() error {
+	factory, err := stats.NewInterceptor()
+	if err != nil {
+		return err
+	}
+	factory.OnNewPeerConnection(func(_ string, getter stats.Getter) {
+		s.statsGetterMu.Lock()
+		s.statsGetter = getter
+		s.statsGetterMu.Unlock()
+	})
+	s.registry.Add(factory)
+
+	senderReports, err := report.NewSenderInterceptor()
+	if err != nil {
+		return err
+	}
+	s.registry.Add(senderReports)
+
+	return nil
+}
+
+// TrackStats summarizes per-track network and pipeline statistics for one
+// outbound video track. Cumulative since track creation; callers that want
+// per-window deltas should snapshot two reads and subtract.
+type TrackStats struct {
+	// Pipeline counters from the local encode loop.
+	FramesEncoded        uint64
+	TotalEncodeTimeNs    uint64 // wall time spent inside encodedReader.Read
+	TotalSendQueueTimeNs uint64 // wall time between Read return and WriteSample return
+
+	// Network counters from the Pion stats interceptor.
+	PacketsSent     uint64
+	BytesSent       uint64
+	HeaderBytesSent uint64
+	NACKCount       uint32
+	PLICount        uint32
+
+	// Remote receiver counters (from RTCP RR).
+	PacketsReceived           uint64
+	PacketsLost               int64
+	Jitter                    float64
+	FractionLost              float64
+	RoundTripTime             time.Duration
+	TotalRoundTripTime        time.Duration
+	RoundTripTimeMeasurements uint64
+}
+
+// GetTrackStats returns the latest cumulative TrackStats for the given video
+// track. Returns nil when the track does not exist. Network fields are zero
+// until the stats interceptor has observed traffic for the track's SSRC and
+// (for RTT) at least one RTCP receiver report has arrived.
+//
+// Pipeline counters approximate the W3C `outbound-rtp` framesEncoded /
+// totalEncodeTime / totalPacketSendDelay fields. They are updated each time
+// the encode loop produces a frame.
+func (s *RTCSender) GetTrackStats(trackID string) *TrackStats {
+	s.tracksMu.RLock()
+	track, ok := s.tracks[trackID]
+	s.tracksMu.RUnlock()
+	if !ok {
+		return nil
+	}
+
+	out := &TrackStats{
+		FramesEncoded:        track.framesEncoded.Load(),
+		TotalEncodeTimeNs:    track.totalEncodeTimeNs.Load(),
+		TotalSendQueueTimeNs: track.totalSendQueueTimeNs.Load(),
+	}
+
+	s.statsGetterMu.RLock()
+	getter := s.statsGetter
+	s.statsGetterMu.RUnlock()
+	if getter == nil || track.rtpSender == nil {
+		return out
+	}
+
+	params := track.rtpSender.GetParameters()
+	if len(params.Encodings) == 0 {
+		return out
+	}
+	ssrc := uint32(params.Encodings[0].SSRC)
+	if ssrc == 0 {
+		return out
+	}
+
+	netStats := getter.Get(ssrc)
+	if netStats == nil {
+		return out
+	}
+
+	out.PacketsSent = netStats.OutboundRTPStreamStats.PacketsSent
+	out.BytesSent = netStats.OutboundRTPStreamStats.BytesSent
+	out.HeaderBytesSent = netStats.OutboundRTPStreamStats.HeaderBytesSent
+	out.NACKCount = netStats.OutboundRTPStreamStats.NACKCount
+	out.PLICount = netStats.OutboundRTPStreamStats.PLICount
+
+	out.PacketsReceived = netStats.RemoteInboundRTPStreamStats.PacketsReceived
+	out.PacketsLost = netStats.RemoteInboundRTPStreamStats.PacketsLost
+	out.Jitter = netStats.RemoteInboundRTPStreamStats.Jitter
+	out.FractionLost = netStats.RemoteInboundRTPStreamStats.FractionLost
+	out.RoundTripTime = netStats.RemoteInboundRTPStreamStats.RoundTripTime
+	out.TotalRoundTripTime = netStats.RemoteInboundRTPStreamStats.TotalRoundTripTime
+	out.RoundTripTimeMeasurements = netStats.RemoteInboundRTPStreamStats.RoundTripTimeMeasurements
+
+	return out
 }
 
 // getOrCreateEncoderBuilder returns the encoder builder from info or creates a default VP8 encoder.
@@ -267,6 +410,7 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 		if err != nil {
 			return err
 		}
+		s.tracks[info.TrackID].rtpSender = rtpSender
 
 		// Handle incoming RTCP
 		go func() {
@@ -373,6 +517,7 @@ func (s *RTCSender) SetupPeerConnection() error {
 
 			return err
 		}
+		track.rtpSender = rtpSender
 
 		// Handle incoming RTCP. Exits on context cancellation or read error.
 		go func() {
@@ -533,18 +678,29 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 // Returns true if a frame was successfully processed, or an error.
 func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (bool, error) {
 	// Read includes VP8 encode — this is the expensive call.
+	tBeforeRead := time.Now()
 	encoded, release, err := track.encodedReader.Read()
 	if err != nil {
 		return false, err
 	}
+	tAfterRead := time.Now()
 
-	track.bitrateTracker.AddFrame(len(encoded.Data), time.Now())
+	track.bitrateTracker.AddFrame(len(encoded.Data), tAfterRead)
 
 	if writeErr := track.videoTrack.WriteSample(media.Sample{
 		Data:     encoded.Data,
 		Duration: time.Second / 10,
 	}); writeErr != nil {
 		s.log.Errorf("Error writing sample for track %s: %v", trackID, writeErr)
+	}
+	tAfterWrite := time.Now()
+
+	track.framesEncoded.Add(1)
+	if d := tAfterRead.Sub(tBeforeRead); d > 0 {
+		track.totalEncodeTimeNs.Add(uint64(d.Nanoseconds())) //nolint:gosec // G115: bounded > 0 by guard above
+	}
+	if d := tAfterWrite.Sub(tAfterRead); d > 0 {
+		track.totalSendQueueTimeNs.Add(uint64(d.Nanoseconds())) //nolint:gosec // G115: bounded > 0 by guard above
 	}
 
 	if s.onEncodedFrame != nil {
