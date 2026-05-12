@@ -98,13 +98,47 @@ func TestCCLogWriter(t *testing.T) {
 func TestGCC(t *testing.T) {
 	initialBitrate := 1000000
 
-	option := GCC(initialBitrate)
+	option := GCC(initialBitrate, 0)
 	require.NotNil(t, option)
 
 	// Test that option is a function
 	assert.IsType(t, Option(nil), option)
 
 	// Note: Full testing would require WebRTC setup, so we just test the option creation
+}
+
+func TestGCC_WithMaxBitrate(t *testing.T) {
+	option := GCC(500_000, 1_500_000)
+	require.NotNil(t, option)
+	assert.IsType(t, Option(nil), option)
+}
+
+func TestGCC_AppliedToMock(t *testing.T) {
+	// Exercises the fallback path for non-RTCSender types.
+	mock := &MockConfigurableWebRTCSender{
+		mediaEngine: &webrtc.MediaEngine{},
+		registry:    &interceptor.Registry{},
+	}
+	err := mock.mediaEngine.RegisterDefaultCodecs()
+	require.NoError(t, err)
+
+	option := GCC(500_000, 0)
+	err = option(mock)
+	require.NoError(t, err)
+}
+
+func TestGCC_AppliedToMockWithMaxBitrate(t *testing.T) {
+	// Exercises the fallback path with maxBitrate > 0.
+	mock := &MockConfigurableWebRTCSender{
+		mediaEngine: &webrtc.MediaEngine{},
+		registry:    &interceptor.Registry{},
+	}
+	err := mock.mediaEngine.RegisterDefaultCodecs()
+	require.NoError(t, err)
+
+	option := GCC(500_000, 1_500_000)
+	err = option(mock)
+	require.NoError(t, err)
 }
 
 func TestSetLoggerFactory(t *testing.T) {

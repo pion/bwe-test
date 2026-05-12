@@ -75,11 +75,24 @@ func CCLogWriter(w io.Writer) Option {
 	}
 }
 
-// GCC returns an Option that configures Google Congestion Control with the specified initial bitrate.
-func GCC(initialBitrate int) Option {
+// GCC returns an Option that configures Google Congestion Control with the
+// specified initial bitrate and max bitrate (in bps). A maxBitrate of 0 means
+// no cap (uses GCC default of 50 Mbps).
+func GCC(initialBitrate, maxBitrate int) Option {
 	return func(sender ConfigurableWebRTCSender) error {
+		if rtcSender, ok := sender.(*RTCSender); ok {
+			rtcSender.gccConfigured = true
+
+			return rtcSender.setupGCC(initialBitrate, maxBitrate)
+		}
+		// Fallback for other ConfigurableWebRTCSender types.
 		controller, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
-			return gcc.NewSendSideBWE(gcc.SendSideBWEInitialBitrate(initialBitrate))
+			opts := []gcc.Option{gcc.SendSideBWEInitialBitrate(initialBitrate)}
+			if maxBitrate > 0 {
+				opts = append(opts, gcc.SendSideBWEMaxBitrate(maxBitrate))
+			}
+
+			return gcc.NewSendSideBWE(opts...)
 		})
 		if err != nil {
 			return err

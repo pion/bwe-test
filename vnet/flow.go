@@ -219,7 +219,7 @@ func createWebRTCSender(
 	commonOpts := []sender.Option{
 		sender.SetVnet(leftVnet, []string{publicIPLeft}),
 		sender.PacketLogWriter(loggers.rtpLogger, loggers.rtcpLogger),
-		sender.GCC(100_000),
+		sender.GCC(100_000, 0),
 		sender.CCLogWriter(loggers.ccLogger),
 		sender.SetLoggerFactory(loggerFactory),
 	}

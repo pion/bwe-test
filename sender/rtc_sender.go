@@ -118,6 +118,9 @@ type RTCSender struct {
 	// Logging
 	ccLogWriter io.Writer
 	log         logging.LeveledLogger
+
+	// gccConfigured is true when GCC was set up via the GCC option.
+	gccConfigured bool
 }
 
 // SetOnEncodedFrame registers a callback invoked after each VP8 frame is
@@ -148,20 +151,22 @@ func NewRTCSender(opts ...Option) (*RTCSender, error) {
 		return nil, err
 	}
 
-	// Set up GCC bandwidth estimation by default
-	if err := sender.setupGCC(1_000_000); err != nil { // Default initial bitrate: 1Mbps
-		return nil, err
-	}
-
 	// Register the stats interceptor so GetTrackStats can return RTP/RTCP
 	// counters (PacketsSent, RoundTripTime) per track.
 	if err := sender.setupStats(); err != nil {
 		return nil, err
 	}
 
-	// Apply options directly to RTCSender
+	// Apply options first (may include custom GCC config)
 	for _, opt := range opts {
 		if err := opt(sender); err != nil {
+			return nil, err
+		}
+	}
+
+	// Set up default GCC only if no GCC option was provided
+	if !sender.gccConfigured {
+		if err := sender.setupGCC(1_000_000, 0); err != nil { // Default initial bitrate: 1Mbps, no max
 			return nil, err
 		}
 	}
@@ -169,10 +174,16 @@ func NewRTCSender(opts ...Option) (*RTCSender, error) {
 	return sender, nil
 }
 
-// setupGCC sets up Google Congestion Control with the specified initial bitrate.
-func (s *RTCSender) setupGCC(initialBitrate int) error {
+// setupGCC sets up Google Congestion Control with the specified initial and max bitrate.
+// A maxBitrate of 0 means no cap (uses GCC default of 50 Mbps).
+func (s *RTCSender) setupGCC(initialBitrate, maxBitrate int) error {
 	controller, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
-		return gcc.NewSendSideBWE(gcc.SendSideBWEInitialBitrate(initialBitrate))
+		opts := []gcc.Option{gcc.SendSideBWEInitialBitrate(initialBitrate)}
+		if maxBitrate > 0 {
+			opts = append(opts, gcc.SendSideBWEMaxBitrate(maxBitrate))
+		}
+
+		return gcc.NewSendSideBWE(opts...)
 	})
 	if err != nil {
 		return err

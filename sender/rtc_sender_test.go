@@ -66,6 +66,29 @@ func TestNewRTCSender(t *testing.T) {
 	var _ ConfigurableWebRTCSender = sender
 }
 
+func TestNewRTCSender_WithGCCOption(t *testing.T) {
+	// When GCC option is provided, the default setupGCC should be skipped.
+	sender, err := NewRTCSender(GCC(500_000, 0))
+	require.NoError(t, err)
+	require.NotNil(t, sender)
+	assert.True(t, sender.gccConfigured)
+}
+
+func TestNewRTCSender_WithGCCMaxBitrate(t *testing.T) {
+	sender, err := NewRTCSender(GCC(500_000, 1_500_000))
+	require.NoError(t, err)
+	require.NotNil(t, sender)
+	assert.True(t, sender.gccConfigured)
+}
+
+func TestNewRTCSender_DefaultGCC(t *testing.T) {
+	// Without GCC option, default GCC should be set up.
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	require.NotNil(t, sender)
+	assert.False(t, sender.gccConfigured)
+}
+
 func TestVideoTrackInfo_Validation(t *testing.T) {
 	tests := []struct {
 		name    string

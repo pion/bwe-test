@@ -57,7 +57,7 @@ func main() {
 	// Create RTCSender with BWE capabilities
 	rtcSender, err := sender.NewRTCSender(
 		sender.DefaultInterceptors(),
-		sender.GCC(initialBitrate), // Initial bitrate 500 kbps
+		sender.GCC(initialBitrate, 0), // Initial bitrate 500 kbps, no max cap
 		sender.SetLoggerFactory(loggerFactory),
 	)
 	if err != nil {
