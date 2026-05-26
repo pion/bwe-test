@@ -230,3 +230,113 @@ func TestFrameBuffer_ConcurrentAccess(t *testing.T) {
 
 	// Test should complete without deadlock or panic
 }
+
+func TestFrameBuffer_SendWithCaptureTs_RoundTrips(t *testing.T) {
+	fb := NewFrameBuffer(640, 480)
+	defer func() { _ = fb.Close() }()
+	fb.SetInitialized()
+
+	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
+
+	evicted, err := fb.SendFrameWithCaptureTS(testImg, 111)
+	require.NoError(t, err)
+	require.False(t, evicted)
+	evicted, err = fb.SendFrameWithCaptureTS(testImg, 222)
+	require.NoError(t, err)
+	require.False(t, evicted)
+
+	// Each Read advances LastCaptureTSUs to the timestamp of the frame
+	// that was just returned.
+	_, release, err := fb.Read()
+	require.NoError(t, err)
+	release()
+	assert.Equal(t, int64(111), fb.LastCaptureTSUs())
+
+	_, release, err = fb.Read()
+	require.NoError(t, err)
+	release()
+	assert.Equal(t, int64(222), fb.LastCaptureTSUs())
+}
+
+func TestFrameBuffer_LegacySendFrame_RecordsZeroCaptureTs(t *testing.T) {
+	fb := NewFrameBuffer(640, 480)
+	defer func() { _ = fb.Close() }()
+	fb.SetInitialized()
+
+	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
+
+	// Seed a non-zero value to confirm Read overwrites it on legacy send.
+	_, err := fb.SendFrameWithCaptureTS(testImg, 999)
+	require.NoError(t, err)
+	_, release, err := fb.Read()
+	require.NoError(t, err)
+	release()
+	require.Equal(t, int64(999), fb.LastCaptureTSUs())
+
+	require.NoError(t, fb.SendFrame(testImg))
+	_, release, err = fb.Read()
+	require.NoError(t, err)
+	release()
+	assert.Equal(t, int64(0), fb.LastCaptureTSUs(),
+		"legacy SendFrame should result in zero LastCaptureTSUs")
+}
+
+func TestFrameBuffer_BlackFrame_PreservesCaptureTS(t *testing.T) {
+	fb := NewFrameBuffer(640, 480)
+	defer func() { _ = fb.Close() }()
+
+	// Seed a value via the buffered path while still uninitialized so it
+	// is consumed by the encoder-init Read first, then a subsequent Read
+	// hits the black-frame timeout and must NOT clobber the recorded
+	// value — codecs with lookahead may emit an encoded output that
+	// corresponds to this still-buffered real frame after the timeout
+	// Read happens, and the callback for that emission must see 555.
+	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
+	_, err := fb.SendFrameWithCaptureTS(testImg, 555)
+	require.NoError(t, err)
+
+	// First Read pulls the buffered frame and records 555.
+	_, release, err := fb.Read()
+	require.NoError(t, err)
+	release()
+	require.Equal(t, int64(555), fb.LastCaptureTSUs())
+
+	// Second Read drops into the 100ms timeout path and returns a black
+	// frame; LastCaptureTSUs must still report 555.
+	_, release, err = fb.Read()
+	require.NoError(t, err)
+	release()
+	assert.Equal(t, int64(555), fb.LastCaptureTSUs(),
+		"black-frame Read should preserve LastCaptureTSUs from the previous real frame")
+}
+
+func TestFrameBuffer_BlackFrame_FirstReadReturnsZero(t *testing.T) {
+	fb := NewFrameBuffer(640, 480)
+	defer func() { _ = fb.Close() }()
+
+	// A fresh buffer that has never seen a real frame must report 0
+	// from a black-frame Read — the atomic's zero value is the sentinel
+	// for "no real frame ever consumed".
+	_, release, err := fb.Read()
+	require.NoError(t, err)
+	release()
+	assert.Equal(t, int64(0), fb.LastCaptureTSUs(),
+		"first black-frame Read on a fresh buffer should return 0")
+}
+
+func TestFrameBuffer_SendWithCaptureTs_OverflowReportsEviction(t *testing.T) {
+	fb := NewFrameBuffer(640, 480)
+	defer func() { _ = fb.Close() }()
+
+	// Buffer capacity is 8. The first 8 sends fit; the 9th must evict the
+	// oldest entry so downstream SLO accounting can see the overload.
+	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
+	for i := range 8 {
+		evicted, err := fb.SendFrameWithCaptureTS(testImg, int64(i+1))
+		require.NoError(t, err)
+		require.False(t, evicted, "send %d should not evict before capacity", i)
+	}
+	evicted, err := fb.SendFrameWithCaptureTS(testImg, 9)
+	require.NoError(t, err)
+	assert.True(t, evicted, "send beyond capacity should report eviction")
+}
