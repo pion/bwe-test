@@ -79,6 +79,16 @@ type EncodedTrack struct {
 // encode pass.
 type EncodedFrameCallback func(trackID string, data []byte, isKeyframe bool)
 
+// FrameSentCallback fires once per encoded frame after WriteSample
+// returns, and once per frame evicted from a full buffer to make room.
+// captureTSUs echoes the value passed to SendFrameWithCaptureTS (0 means
+// no timestamp; filter when used for latency measurement). sentAtWallUs
+// is time.Now().UnixMicro() at WriteSample return (or at eviction).
+// dropped is true when WriteSample errored or the frame was evicted.
+// Runs on the encode goroutine for completed sends, on the SendFrame
+// caller's goroutine for evictions; must not block.
+type FrameSentCallback func(trackID string, captureTSUs, sentAtWallUs int64, dropped bool)
+
 // RTCSender is a generic sender that can work with any frame source.
 type RTCSender struct {
 	// WebRTC components
@@ -109,6 +119,11 @@ type RTCSender struct {
 	// Optional callback invoked after each VP8 frame is encoded.
 	onEncodedFrame EncodedFrameCallback
 
+	// Optional callback invoked once per frame after WriteSample returns.
+	// Used by callers measuring end-to-end onboard latency (capture_ts ->
+	// frame enqueued into RTP send pipeline).
+	onFrameSent FrameSentCallback
+
 	// statsGetter is populated by the Pion stats interceptor's
 	// OnNewPeerConnection callback. Used by GetTrackStats to read RTP/RTCP
 	// counters (PacketsSent, RoundTripTime) per SSRC.
@@ -129,6 +144,14 @@ func (s *RTCSender) SetOnEncodedFrame(cb EncodedFrameCallback) {
 	s.tracksMu.Lock()
 	defer s.tracksMu.Unlock()
 	s.onEncodedFrame = cb
+}
+
+// SetOnFrameSent registers a per-frame send-completion callback.
+// Thread-safe. See FrameSentCallback for the contract.
+func (s *RTCSender) SetOnFrameSent(cb FrameSentCallback) {
+	s.tracksMu.Lock()
+	defer s.tracksMu.Unlock()
+	s.onFrameSent = cb
 }
 
 // NewRTCSender creates a new generic sender with GCC bandwidth estimation by default.
@@ -478,8 +501,19 @@ func (s *RTCSender) AddAudioTrack(trackID string) (*webrtc.TrackLocalStaticSampl
 	return audioTrack, nil
 }
 
-// SendFrame sends a frame to a specific track.
+// SendFrame sends a frame to a specific track with no associated capture
+// timestamp. Equivalent to SendFrameWithCaptureTS(trackID, frame, 0).
 func (s *RTCSender) SendFrame(trackID string, frame image.Image) error {
+	return s.SendFrameWithCaptureTS(trackID, frame, 0)
+}
+
+// SendFrameWithCaptureTS sends a frame along with an opaque capture
+// timestamp (microseconds) that is echoed to any registered
+// FrameSentCallback. Pass 0 to opt out. When the buffer is full and the
+// oldest frame is evicted to make room, the callback fires synchronously
+// for the evicted frame with dropped=true so downstream SLO accounting
+// catches the overload case.
+func (s *RTCSender) SendFrameWithCaptureTS(trackID string, frame image.Image, captureTSUs int64) error {
 	s.tracksMu.RLock()
 	track, exists := s.tracks[trackID]
 	s.tracksMu.RUnlock()
@@ -488,13 +522,17 @@ func (s *RTCSender) SendFrame(trackID string, frame image.Image) error {
 		return fmt.Errorf("%w: %s", ErrTrackNotFound, trackID)
 	}
 
-	// Use the video source's SendFrame method if it's a FrameBuffer
-	if frameBuffer, ok := track.videoSource.(*FrameBuffer); ok {
-		return frameBuffer.SendFrame(frame)
+	frameBuffer, ok := track.videoSource.(*FrameBuffer)
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrTrackDoesNotSupportFrames, trackID)
 	}
 
-	// If it's not a FrameBuffer, we can't send frames to it
-	return fmt.Errorf("%w: %s", ErrTrackDoesNotSupportFrames, trackID)
+	evicted, err := frameBuffer.SendFrameWithCaptureTS(frame, captureTSUs)
+	if evicted && s.onFrameSent != nil {
+		s.onFrameSent(trackID, 0, time.Now().UnixMicro(), true)
+	}
+
+	return err
 }
 
 // SetupPeerConnection initializes the WebRTC peer connection.
@@ -696,12 +734,20 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	}
 	tAfterRead := time.Now()
 
+	// Capture timestamp for the just-encoded frame; non-FrameBuffer
+	// sources return 0.
+	var captureTSUs int64
+	if cfs, ok := track.videoSource.(*FrameBuffer); ok {
+		captureTSUs = cfs.LastCaptureTSUs()
+	}
+
 	track.bitrateTracker.AddFrame(len(encoded.Data), tAfterRead)
 
-	if writeErr := track.videoTrack.WriteSample(media.Sample{
+	writeErr := track.videoTrack.WriteSample(media.Sample{
 		Data:     encoded.Data,
 		Duration: time.Second / 10,
-	}); writeErr != nil {
+	})
+	if writeErr != nil {
 		s.log.Errorf("Error writing sample for track %s: %v", trackID, writeErr)
 	}
 	tAfterWrite := time.Now()
@@ -717,6 +763,10 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	if s.onEncodedFrame != nil {
 		isKey := len(encoded.Data) > 0 && (encoded.Data[0]&0x01) == 0
 		s.onEncodedFrame(trackID, encoded.Data, isKey)
+	}
+
+	if s.onFrameSent != nil {
+		s.onFrameSent(trackID, captureTSUs, tAfterWrite.UnixMicro(), writeErr != nil)
 	}
 
 	release()

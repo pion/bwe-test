@@ -7,6 +7,7 @@ import (
 	"errors"
 	"image"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,22 +60,31 @@ func getBlackFrame(width, height int) *image.YCbCr {
 	return sharedBlackFrame
 }
 
+// frameWithMeta pairs a frame with an opaque capture timestamp
+// (microseconds). Zero captureTSUs means no timestamp (legacy SendFrame
+// or black-frame init).
+type frameWithMeta struct {
+	img         image.Image
+	captureTSUs int64
+}
+
 // FrameBuffer is a simple in-memory frame buffer that implements VideoSource
 // It can be used as a virtual video driver for testing or programmatic frame injection.
 type FrameBuffer struct {
-	frameChan   chan image.Image
-	closeChan   chan struct{}
-	closeOnce   sync.Once
-	width       int
-	height      int
-	id          string
-	initialized bool
+	frameChan       chan frameWithMeta
+	closeChan       chan struct{}
+	closeOnce       sync.Once
+	width           int
+	height          int
+	id              string
+	initialized     bool
+	lastCaptureTSUs atomic.Int64
 }
 
 // NewFrameBuffer creates a new frame buffer with the specified dimensions.
 func NewFrameBuffer(width, height int) *FrameBuffer {
 	return &FrameBuffer{
-		frameChan: make(chan image.Image, 8), // Increased from 2 to 8 for better buffering
+		frameChan: make(chan frameWithMeta, 8), // Increased from 2 to 8 for better buffering
 		closeChan: make(chan struct{}),
 		width:     width,
 		height:    height,
@@ -113,12 +123,18 @@ func (f *FrameBuffer) ResetInitialized() {
 // When initialized (normal operation), returns immediately with ErrNoFrameAvailable
 // if no frame is ready. When not initialized (encoder init), blocks up to 100ms
 // and returns a black frame for codec property detection.
+//
+// Side effect: stores the popped frame's captureTSUs for LastCaptureTSUs.
+// Black-frame timeouts preserve the previous value so encoders with
+// lookahead can still correlate the previously-read real frame.
 func (f *FrameBuffer) Read() (image.Image, func(), error) {
 	if f.initialized {
 		// Non-blocking fast path for normal operation.
 		select {
-		case img := <-f.frameChan:
-			return img, func() {}, nil
+		case fm := <-f.frameChan:
+			f.lastCaptureTSUs.Store(fm.captureTSUs)
+
+			return fm.img, func() {}, nil
 		case <-f.closeChan:
 			return nil, func() {}, ErrBufferClosed
 		default:
@@ -131,8 +147,10 @@ func (f *FrameBuffer) Read() (image.Image, func(), error) {
 	defer timer.Stop()
 
 	select {
-	case img := <-f.frameChan:
-		return img, func() {}, nil
+	case fm := <-f.frameChan:
+		f.lastCaptureTSUs.Store(fm.captureTSUs)
+
+		return fm.img, func() {}, nil
 	case <-f.closeChan:
 		return nil, func() {}, ErrBufferClosed
 	case <-timer.C:
@@ -142,35 +160,51 @@ func (f *FrameBuffer) Read() (image.Image, func(), error) {
 	}
 }
 
-// SendFrame adds a frame to the buffer.
+// LastCaptureTSUs returns the captureTSUs of the most recently popped
+// frame, or 0 if no real frame has been consumed yet. Intended for the
+// encode loop to call right after encodedReader.Read.
+func (f *FrameBuffer) LastCaptureTSUs() int64 {
+	return f.lastCaptureTSUs.Load()
+}
+
+// SendFrame adds a frame to the buffer with no capture timestamp.
 // If the buffer is full, it drops the oldest frame and adds the new one.
 func (f *FrameBuffer) SendFrame(frame image.Image) error {
+	_, err := f.SendFrameWithCaptureTS(frame, 0)
+
+	return err
+}
+
+// SendFrameWithCaptureTS adds a frame with an opaque capture timestamp
+// (microseconds), retrievable via LastCaptureTSUs after the encode
+// pipeline pops it. Pass 0 to opt out. evicted is true when the buffer
+// was full and the oldest entry was discarded to make room.
+func (f *FrameBuffer) SendFrameWithCaptureTS(frame image.Image, captureTSUs int64) (evicted bool, err error) {
 	select {
 	case <-f.closeChan:
-		return ErrBufferClosed
+		return false, ErrBufferClosed
 	default:
 	}
 
+	fm := frameWithMeta{img: frame, captureTSUs: captureTSUs}
+
 	select {
-	case f.frameChan <- frame:
-		// Successfully added frame
-		return nil
+	case f.frameChan <- fm:
+		return false, nil
 	default:
-		// Buffer full - drop oldest frame and add the new one
+		// Buffer full - drop oldest frame and add the new one.
 		select {
-		case <-f.frameChan: // Remove oldest
-			// Successfully removed old frame
+		case <-f.frameChan:
+			evicted = true
 		default:
-			// Buffer was empty (race condition)
+			// Buffer drained between the full-select and here.
 		}
 
-		// Now add the new frame
 		select {
-		case f.frameChan <- frame:
-			return nil
+		case f.frameChan <- fm:
+			return evicted, nil
 		default:
-			// Still can't add (shouldn't happen)
-			return ErrFailedToAddFrameAfterDrop
+			return evicted, ErrFailedToAddFrameAfterDrop
 		}
 	}
 }

@@ -8,6 +8,7 @@ package sender
 import (
 	"errors"
 	"image"
+	"sync"
 	"testing"
 	"time"
 
@@ -716,4 +717,117 @@ func TestTrackStats_ZeroValueIsValid(t *testing.T) {
 	assert.Equal(t, uint64(0), s.FramesEncoded)
 	assert.Equal(t, time.Duration(0), s.RoundTripTime)
 	assert.Equal(t, uint64(0), s.RoundTripTimeMeasurements)
+}
+
+func TestRTCSender_OnFrameSent_FiresWithCaptureTs(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	err = sender.AddVideoTrack(VideoTrackInfo{
+		TrackID:        "cam-0",
+		Width:          640,
+		Height:         480,
+		InitialBitrate: 500_000,
+	})
+	require.NoError(t, err)
+
+	type sentEvent struct {
+		trackID      string
+		captureTSUs  int64
+		sentAtWallUs int64
+		dropped      bool
+	}
+	var (
+		mu     sync.Mutex
+		events []sentEvent
+	)
+	sender.SetOnFrameSent(func(trackID string, captureTSUs, sentAtWallUs int64, dropped bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		events = append(events, sentEvent{trackID, captureTSUs, sentAtWallUs, dropped})
+	})
+
+	// libvpx has a one-frame encoder lookahead, so a single SendFrame +
+	// processEncodedFrames will not produce an encoded output yet. Drive
+	// a small batch and pump processEncodedFrames until the callback has
+	// seen at least one event carrying a non-zero captureTSUs. This
+	// matches the real pipeline where the encoder runs at ~30fps with
+	// frames continuously injected by the cgo bridge.
+	testImg := image.NewYCbCr(image.Rect(0, 0, 640, 480), image.YCbCrSubsampleRatio420)
+	const wantCaptureTS int64 = 1_700_000_000_000
+	for i, ts := range []int64{wantCaptureTS, wantCaptureTS + 33_000, wantCaptureTS + 66_000} {
+		require.NoError(t, sender.SendFrameWithCaptureTS("cam-0", testImg, ts), "send %d", i)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got *sentEvent
+	for time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		sender.processEncodedFrames()
+
+		mu.Lock()
+		for i := range events {
+			if events[i].captureTSUs == wantCaptureTS {
+				got = &events[i]
+
+				break
+			}
+		}
+		mu.Unlock()
+		if got != nil {
+			break
+		}
+	}
+	require.NotNil(t, got, "OnFrameSent never echoed the supplied captureTSUs within 2s")
+	assert.Equal(t, "cam-0", got.trackID)
+	assert.Equal(t, wantCaptureTS, got.captureTSUs)
+	assert.Positive(t, got.sentAtWallUs, "sentAtWallUs should be a real wall-clock microsecond")
+	assert.False(t, got.dropped, "WriteSample should succeed for an in-spec frame")
+}
+
+func TestRTCSender_OnFrameSent_FiresWithDroppedOnEviction(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	err = sender.AddVideoTrack(VideoTrackInfo{
+		TrackID:        "cam-0",
+		Width:          640,
+		Height:         480,
+		EncoderBuilder: &MockVideoEncoderBuilder{},
+	})
+	require.NoError(t, err)
+
+	var (
+		mu      sync.Mutex
+		dropped int
+		nonDrop int
+	)
+	sender.SetOnFrameSent(func(_ string, _ int64, _ int64, isDrop bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if isDrop {
+			dropped++
+		} else {
+			nonDrop++
+		}
+	})
+
+	// Saturate the 8-slot FrameBuffer, then send extras to force eviction.
+	// The encode goroutine has not been driven, so the buffer never drains
+	// and every send beyond capacity must evict and fire the callback with
+	// dropped=true.
+	testImg := image.NewYCbCr(image.Rect(0, 0, 640, 480), image.YCbCrSubsampleRatio420)
+	for range 8 {
+		require.NoError(t, sender.SendFrameWithCaptureTS("cam-0", testImg, 1))
+	}
+	for range 3 {
+		require.NoError(t, sender.SendFrameWithCaptureTS("cam-0", testImg, 1))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 3, dropped, "each over-capacity send should fire one dropped callback")
+	assert.Equal(t, 0, nonDrop, "no encoded-send callback should fire without driving the encoder")
 }
