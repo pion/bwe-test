@@ -324,6 +324,52 @@ func TestFrameBuffer_BlackFrame_FirstReadReturnsZero(t *testing.T) {
 		"first black-frame Read on a fresh buffer should return 0")
 }
 
+func TestFrameBuffer_LastDequeueWallUs_AdvancesOnRead(t *testing.T) {
+	fb := NewFrameBuffer(640, 480)
+	defer func() { _ = fb.Close() }()
+	fb.SetInitialized()
+
+	assert.Zero(t, fb.LastDequeueWallUs(), "fresh buffer should report zero")
+
+	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
+	_, err := fb.SendFrameWithCaptureTS(testImg, 111)
+	require.NoError(t, err)
+
+	before := time.Now().UnixMicro()
+	_, release, err := fb.Read()
+	require.NoError(t, err)
+	release()
+	after := time.Now().UnixMicro()
+
+	got := fb.LastDequeueWallUs()
+	assert.GreaterOrEqual(t, got, before, "dequeue stamp must be >= pre-Read wall clock")
+	assert.LessOrEqual(t, got, after, "dequeue stamp must be <= post-Read wall clock")
+}
+
+func TestFrameBuffer_LastDequeueWallUs_PreservedOnBlackFrame(t *testing.T) {
+	fb := NewFrameBuffer(640, 480)
+	defer func() { _ = fb.Close() }()
+
+	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
+	_, err := fb.SendFrameWithCaptureTS(testImg, 555)
+	require.NoError(t, err)
+
+	// First Read consumes the buffered frame and stamps a real dequeue.
+	_, release, err := fb.Read()
+	require.NoError(t, err)
+	release()
+	stampAfterReal := fb.LastDequeueWallUs()
+	require.Positive(t, stampAfterReal)
+
+	// Second Read hits the 100ms timeout (uninitialized + empty) and
+	// returns a black frame; LastDequeueWallUs must NOT be clobbered.
+	_, release, err = fb.Read()
+	require.NoError(t, err)
+	release()
+	assert.Equal(t, stampAfterReal, fb.LastDequeueWallUs(),
+		"black-frame Read should preserve LastDequeueWallUs")
+}
+
 func TestFrameBuffer_SendWithCaptureTs_OverflowReportsEviction(t *testing.T) {
 	fb := NewFrameBuffer(640, 480)
 	defer func() { _ = fb.Close() }()

@@ -79,15 +79,17 @@ type EncodedTrack struct {
 // encode pass.
 type EncodedFrameCallback func(trackID string, data []byte, isKeyframe bool)
 
-// FrameSentCallback fires once per encoded frame after WriteSample
-// returns, and once per frame evicted from a full buffer to make room.
-// captureTSUs echoes the value passed to SendFrameWithCaptureTS (0 means
-// no timestamp; filter when used for latency measurement). sentAtWallUs
-// is time.Now().UnixMicro() at WriteSample return (or at eviction).
-// dropped is true when WriteSample errored or the frame was evicted.
-// Runs on the encode goroutine for completed sends, on the SendFrame
-// caller's goroutine for evictions; must not block.
-type FrameSentCallback func(trackID string, captureTSUs, sentAtWallUs int64, dropped bool)
+// FrameSentCallback fires per encoded frame (after WriteSample) and per
+// frame evicted from a full buffer. captureTSUs echoes the value passed
+// to SendFrameWithCaptureTS (0 = none). dequeuedAtWallUs / encodeDoneAtWallUs
+// / sentAtWallUs are time.Now().UnixMicro() at FrameBuffer.Read return,
+// encodedReader.Read return, and WriteSample return respectively. On
+// dropped=true (WriteSample error or eviction), dequeuedAtWallUs and
+// encodeDoneAtWallUs are 0. Runs on the encode goroutine for completed
+// sends, on the SendFrame caller's goroutine for evictions; must not block.
+type FrameSentCallback func(trackID string,
+	captureTSUs, dequeuedAtWallUs, encodeDoneAtWallUs, sentAtWallUs int64,
+	dropped bool)
 
 // RTCSender is a generic sender that can work with any frame source.
 type RTCSender struct {
@@ -529,7 +531,7 @@ func (s *RTCSender) SendFrameWithCaptureTS(trackID string, frame image.Image, ca
 
 	evicted, err := frameBuffer.SendFrameWithCaptureTS(frame, captureTSUs)
 	if evicted && s.onFrameSent != nil {
-		s.onFrameSent(trackID, 0, time.Now().UnixMicro(), true)
+		s.onFrameSent(trackID, 0, 0, 0, time.Now().UnixMicro(), true)
 	}
 
 	return err
@@ -734,11 +736,11 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	}
 	tAfterRead := time.Now()
 
-	// Capture timestamp for the just-encoded frame; non-FrameBuffer
-	// sources return 0.
-	var captureTSUs int64
+	// Per-frame stamps; non-FrameBuffer sources report 0.
+	var captureTSUs, dequeuedAtWallUs int64
 	if cfs, ok := track.videoSource.(*FrameBuffer); ok {
 		captureTSUs = cfs.LastCaptureTSUs()
+		dequeuedAtWallUs = cfs.LastDequeueWallUs()
 	}
 
 	track.bitrateTracker.AddFrame(len(encoded.Data), tAfterRead)
@@ -766,7 +768,8 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	}
 
 	if s.onFrameSent != nil {
-		s.onFrameSent(trackID, captureTSUs, tAfterWrite.UnixMicro(), writeErr != nil)
+		s.onFrameSent(trackID, captureTSUs, dequeuedAtWallUs,
+			tAfterRead.UnixMicro(), tAfterWrite.UnixMicro(), writeErr != nil)
 	}
 
 	release()
