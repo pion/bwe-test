@@ -71,14 +71,15 @@ type frameWithMeta struct {
 // FrameBuffer is a simple in-memory frame buffer that implements VideoSource
 // It can be used as a virtual video driver for testing or programmatic frame injection.
 type FrameBuffer struct {
-	frameChan       chan frameWithMeta
-	closeChan       chan struct{}
-	closeOnce       sync.Once
-	width           int
-	height          int
-	id              string
-	initialized     bool
-	lastCaptureTSUs atomic.Int64
+	frameChan         chan frameWithMeta
+	closeChan         chan struct{}
+	closeOnce         sync.Once
+	width             int
+	height            int
+	id                string
+	initialized       bool
+	lastCaptureTSUs   atomic.Int64
+	lastDequeueWallUs atomic.Int64
 }
 
 // NewFrameBuffer creates a new frame buffer with the specified dimensions.
@@ -133,6 +134,7 @@ func (f *FrameBuffer) Read() (image.Image, func(), error) {
 		select {
 		case fm := <-f.frameChan:
 			f.lastCaptureTSUs.Store(fm.captureTSUs)
+			f.lastDequeueWallUs.Store(time.Now().UnixMicro())
 
 			return fm.img, func() {}, nil
 		case <-f.closeChan:
@@ -149,6 +151,7 @@ func (f *FrameBuffer) Read() (image.Image, func(), error) {
 	select {
 	case fm := <-f.frameChan:
 		f.lastCaptureTSUs.Store(fm.captureTSUs)
+		f.lastDequeueWallUs.Store(time.Now().UnixMicro())
 
 		return fm.img, func() {}, nil
 	case <-f.closeChan:
@@ -165,6 +168,14 @@ func (f *FrameBuffer) Read() (image.Image, func(), error) {
 // encode loop to call right after encodedReader.Read.
 func (f *FrameBuffer) LastCaptureTSUs() int64 {
 	return f.lastCaptureTSUs.Load()
+}
+
+// LastDequeueWallUs returns time.Now().UnixMicro() at the most recent
+// real-frame Read (the queue-exit instant), or 0 if no real frame has
+// been consumed yet. Intended for the encode loop to read right after
+// encodedReader.Read.
+func (f *FrameBuffer) LastDequeueWallUs() int64 {
+	return f.lastDequeueWallUs.Load()
 }
 
 // SendFrame adds a frame to the buffer with no capture timestamp.

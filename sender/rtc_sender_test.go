@@ -733,19 +733,26 @@ func TestRTCSender_OnFrameSent_FiresWithCaptureTs(t *testing.T) {
 	require.NoError(t, err)
 
 	type sentEvent struct {
-		trackID      string
-		captureTSUs  int64
-		sentAtWallUs int64
-		dropped      bool
+		trackID            string
+		captureTSUs        int64
+		dequeuedAtWallUs   int64
+		encodeDoneAtWallUs int64
+		sentAtWallUs       int64
+		dropped            bool
 	}
 	var (
 		mu     sync.Mutex
 		events []sentEvent
 	)
-	sender.SetOnFrameSent(func(trackID string, captureTSUs, sentAtWallUs int64, dropped bool) {
+	sender.SetOnFrameSent(func(trackID string,
+		captureTSUs, dequeuedAtWallUs, encodeDoneAtWallUs, sentAtWallUs int64,
+		dropped bool,
+	) {
 		mu.Lock()
 		defer mu.Unlock()
-		events = append(events, sentEvent{trackID, captureTSUs, sentAtWallUs, dropped})
+		events = append(events, sentEvent{
+			trackID, captureTSUs, dequeuedAtWallUs, encodeDoneAtWallUs, sentAtWallUs, dropped,
+		})
 	})
 
 	// libvpx has a one-frame encoder lookahead, so a single SendFrame +
@@ -782,8 +789,14 @@ func TestRTCSender_OnFrameSent_FiresWithCaptureTs(t *testing.T) {
 	require.NotNil(t, got, "OnFrameSent never echoed the supplied captureTSUs within 2s")
 	assert.Equal(t, "cam-0", got.trackID)
 	assert.Equal(t, wantCaptureTS, got.captureTSUs)
+	assert.Positive(t, got.dequeuedAtWallUs, "dequeuedAtWallUs should be set on success path")
+	assert.Positive(t, got.encodeDoneAtWallUs, "encodeDoneAtWallUs should be set on success path")
 	assert.Positive(t, got.sentAtWallUs, "sentAtWallUs should be a real wall-clock microsecond")
 	assert.False(t, got.dropped, "WriteSample should succeed for an in-spec frame")
+	assert.LessOrEqual(t, got.dequeuedAtWallUs, got.encodeDoneAtWallUs,
+		"dequeue must precede encode-done")
+	assert.LessOrEqual(t, got.encodeDoneAtWallUs, got.sentAtWallUs,
+		"encode-done must precede send")
 }
 
 func TestRTCSender_OnFrameSent_FiresWithDroppedOnEviction(t *testing.T) {
@@ -804,11 +817,15 @@ func TestRTCSender_OnFrameSent_FiresWithDroppedOnEviction(t *testing.T) {
 		dropped int
 		nonDrop int
 	)
-	sender.SetOnFrameSent(func(_ string, _ int64, _ int64, isDrop bool) {
+	sender.SetOnFrameSent(func(_ string, _, dequeued, encodeDone, _ int64, isDrop bool) {
 		mu.Lock()
 		defer mu.Unlock()
 		if isDrop {
 			dropped++
+			// Evictions must report zero for the intermediate timestamps;
+			// no encode happened.
+			assert.Zero(t, dequeued, "evictions should report dequeuedAtWallUs=0")
+			assert.Zero(t, encodeDone, "evictions should report encodeDoneAtWallUs=0")
 		} else {
 			nonDrop++
 		}
