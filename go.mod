@@ -10,7 +10,7 @@ require (
 	github.com/pion/mediadevices v0.9.4
 	github.com/pion/rtcp v1.2.16
 	github.com/pion/rtp v1.10.1
-	github.com/pion/transport/v4 v4.0.1
+	github.com/pion/transport/v4 v4.0.2
 	github.com/pion/webrtc/v4 v4.2.11
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/sync v0.11.0
@@ -35,6 +35,6 @@ require (
 	golang.org/x/image v0.23.0 // indirect
 	golang.org/x/net v0.50.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/time v0.10.0 // indirect
+	golang.org/x/time v0.14.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
