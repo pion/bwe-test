@@ -83,9 +83,16 @@ type FrameBuffer struct {
 }
 
 // NewFrameBuffer creates a new frame buffer with the specified dimensions.
+//
+// Capacity 2: one in-flight + one staged. Sized for low-latency real-time
+// senders where source > encoder rate. When the source is steady (no bursts
+// and no encoder slack to drain a backlog), encoder throughput is set by
+// encoder CPU capacity regardless of capacity, so a deeper queue only adds
+// wait time without delivering more frames. Capacity 2 tolerates one frame
+// of arrival/encode jitter; capacity 1 would drop on any same-tick burst.
 func NewFrameBuffer(width, height int) *FrameBuffer {
 	return &FrameBuffer{
-		frameChan: make(chan frameWithMeta, 8), // Increased from 2 to 8 for better buffering
+		frameChan: make(chan frameWithMeta, 2),
 		closeChan: make(chan struct{}),
 		width:     width,
 		height:    height,

@@ -374,15 +374,15 @@ func TestFrameBuffer_SendWithCaptureTs_OverflowReportsEviction(t *testing.T) {
 	fb := NewFrameBuffer(640, 480)
 	defer func() { _ = fb.Close() }()
 
-	// Buffer capacity is 8. The first 8 sends fit; the 9th must evict the
+	// Buffer capacity is 2. The first 2 sends fit; the 3rd must evict the
 	// oldest entry so downstream SLO accounting can see the overload.
 	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
-	for i := range 8 {
+	for i := range 2 {
 		evicted, err := fb.SendFrameWithCaptureTS(testImg, int64(i+1))
 		require.NoError(t, err)
 		require.False(t, evicted, "send %d should not evict before capacity", i)
 	}
-	evicted, err := fb.SendFrameWithCaptureTS(testImg, 9)
+	evicted, err := fb.SendFrameWithCaptureTS(testImg, 3)
 	require.NoError(t, err)
 	assert.True(t, evicted, "send beyond capacity should report eviction")
 }
