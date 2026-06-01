@@ -757,14 +757,16 @@ func TestRTCSender_OnFrameSent_FiresWithCaptureTs(t *testing.T) {
 
 	// libvpx has a one-frame encoder lookahead, so a single SendFrame +
 	// processEncodedFrames will not produce an encoded output yet. Drive
-	// a small batch and pump processEncodedFrames until the callback has
-	// seen at least one event carrying a non-zero captureTSUs. This
-	// matches the real pipeline where the encoder runs at ~30fps with
-	// frames continuously injected by the cgo bridge.
+	// a small batch and pump processEncodedFrames between sends so the
+	// 2-slot FrameBuffer drains and the first frame is not evicted before
+	// the encoder consumes it. This matches the real pipeline where the
+	// encoder runs at ~30fps with frames continuously injected by the
+	// cgo bridge.
 	testImg := image.NewYCbCr(image.Rect(0, 0, 640, 480), image.YCbCrSubsampleRatio420)
 	const wantCaptureTS int64 = 1_700_000_000_000
 	for i, ts := range []int64{wantCaptureTS, wantCaptureTS + 33_000, wantCaptureTS + 66_000} {
 		require.NoError(t, sender.SendFrameWithCaptureTS("cam-0", testImg, ts), "send %d", i)
+		sender.processEncodedFrames()
 	}
 
 	deadline := time.Now().Add(2 * time.Second)
@@ -831,12 +833,12 @@ func TestRTCSender_OnFrameSent_FiresWithDroppedOnEviction(t *testing.T) {
 		}
 	})
 
-	// Saturate the 8-slot FrameBuffer, then send extras to force eviction.
+	// Saturate the 2-slot FrameBuffer, then send extras to force eviction.
 	// The encode goroutine has not been driven, so the buffer never drains
 	// and every send beyond capacity must evict and fire the callback with
 	// dropped=true.
 	testImg := image.NewYCbCr(image.Rect(0, 0, 640, 480), image.YCbCrSubsampleRatio420)
-	for range 8 {
+	for range 2 {
 		require.NoError(t, sender.SendFrameWithCaptureTS("cam-0", testImg, 1))
 	}
 	for range 3 {
