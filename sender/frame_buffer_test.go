@@ -109,36 +109,18 @@ func TestFrameBuffer_BufferFull(t *testing.T) {
 	}
 }
 
-func TestFrameBuffer_ReadWithoutFramesBlocksUntilFrame(t *testing.T) {
+func TestFrameBuffer_ReadWithoutFrames(t *testing.T) {
 	fb := NewFrameBuffer(640, 480)
 	defer func() { _ = fb.Close() }()
 
-	// Mark as initialized so Read blocks for real frames.
+	// Mark as initialized so we take the non-blocking fast path.
 	fb.SetInitialized()
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		img, release, err := fb.Read()
-		require.NoError(t, err)
-		assert.NotNil(t, img)
-		release()
-	}()
-
-	select {
-	case <-done:
-		require.Fail(t, "Read should block when initialized buffer is empty")
-	case <-time.After(20 * time.Millisecond):
-	}
-
-	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
-	require.NoError(t, fb.SendFrame(testImg))
-
-	select {
-	case <-done:
-	case <-time.After(200 * time.Millisecond):
-		require.Fail(t, "Read did not unblock after frame arrival")
-	}
+	img, release, err := fb.Read()
+	assert.Nil(t, img)
+	assert.NotNil(t, release)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrNoFrameAvailable)
 }
 
 func TestFrameBuffer_MultipleClose(t *testing.T) {
@@ -181,7 +163,8 @@ func TestFrameBuffer_ReadInitializedAfterClose(t *testing.T) {
 	fb := NewFrameBuffer(640, 480)
 	fb.SetInitialized()
 
-	// Close, then read — blocking path should detect closeChan.
+	// Close, then read — the closeChan precedence check should win over
+	// the default branch in the non-blocking select.
 	err := fb.Close()
 	require.NoError(t, err)
 
@@ -190,30 +173,6 @@ func TestFrameBuffer_ReadInitializedAfterClose(t *testing.T) {
 	assert.NotNil(t, release)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrBufferClosed)
-}
-
-func TestFrameBuffer_ReadInitializedCloseWhileBlocked(t *testing.T) {
-	fb := NewFrameBuffer(640, 480)
-	fb.SetInitialized()
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		img, release, err := fb.Read()
-		assert.Nil(t, img)
-		assert.NotNil(t, release)
-		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrBufferClosed)
-	}()
-
-	time.Sleep(20 * time.Millisecond)
-	require.NoError(t, fb.Close())
-
-	select {
-	case <-done:
-	case <-time.After(200 * time.Millisecond):
-		require.Fail(t, "blocked Read did not return on Close")
-	}
 }
 
 func TestFrameBuffer_ReadUninitializedWithFrame(t *testing.T) {

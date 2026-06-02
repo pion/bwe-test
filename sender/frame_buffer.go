@@ -128,24 +128,36 @@ func (f *FrameBuffer) ResetInitialized() {
 }
 
 // Read returns the next available frame from the buffer.
-// When initialized (normal operation), it blocks until a frame arrives or the
-// buffer is closed. When not initialized (encoder init), it blocks up to 100ms
-// and returns a black frame for codec property detection.
+// When initialized (normal operation), it returns immediately with
+// ErrNoFrameAvailable if no frame is ready. The vpx encoder's Read holds
+// its internal mutex across the inner Read call, so blocking here would
+// also block concurrent DynamicQPControl bitrate updates that try to take
+// the same mutex. runEncodeLoop handles ErrNoFrameAvailable by sleeping
+// briefly before retrying. When not initialized (encoder init), it blocks
+// up to 100ms and returns a black frame for codec property detection.
 //
 // Side effect: stores the popped frame's captureTSUs for LastCaptureTSUs.
 // Black-frame timeouts preserve the previous value so encoders with
 // lookahead can still correlate the previously-read real frame.
 func (f *FrameBuffer) Read() (image.Image, func(), error) {
 	if f.initialized {
-		// Blocking path for steady-state encode loops.
+		// Check closeChan first so a closed buffer always reports
+		// ErrBufferClosed instead of racing with the default branch below
+		// (Go's select picks ready cases pseudo-randomly).
+		select {
+		case <-f.closeChan:
+			return nil, func() {}, ErrBufferClosed
+		default:
+		}
+		// Non-blocking fast path for normal operation.
 		select {
 		case fm := <-f.frameChan:
 			f.lastCaptureTSUs.Store(fm.captureTSUs)
 			f.lastDequeueWallUs.Store(time.Now().UnixMicro())
 
 			return fm.img, func() {}, nil
-		case <-f.closeChan:
-			return nil, func() {}, ErrBufferClosed
+		default:
+			return nil, func() {}, ErrNoFrameAvailable
 		}
 	}
 
