@@ -127,7 +127,7 @@ func TestFrameBuffer_ReadWithoutFramesBlocksUntilFrame(t *testing.T) {
 
 	select {
 	case <-done:
-		t.Fatal("Read should block when initialized buffer is empty")
+		require.Fail(t, "Read should block when initialized buffer is empty")
 	case <-time.After(20 * time.Millisecond):
 	}
 
@@ -137,7 +137,7 @@ func TestFrameBuffer_ReadWithoutFramesBlocksUntilFrame(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("Read did not unblock after frame arrival")
+		require.Fail(t, "Read did not unblock after frame arrival")
 	}
 }
 
@@ -212,7 +212,7 @@ func TestFrameBuffer_ReadInitializedCloseWhileBlocked(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("blocked Read did not return on Close")
+		require.Fail(t, "blocked Read did not return on Close")
 	}
 }
 

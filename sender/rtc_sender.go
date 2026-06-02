@@ -63,7 +63,10 @@ type EncodedTrack struct {
 	encoderBuilder codec.VideoEncoderBuilder
 	videoSource    VideoSource
 	bitrateTracker *codec.BitrateTracker
-	mimeType       string
+	// bitrateMu serializes access to bitrateTracker; AddFrame runs on the
+	// encode goroutine and GetBitrate runs on the BWE update path.
+	bitrateMu sync.Mutex
+	mimeType  string
 
 	// rtpSender is set after AddTrack and used to look up the SSRC when
 	// resolving network stats from the Pion stats interceptor.
@@ -381,12 +384,14 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 
 	if _, exists := s.tracks[info.TrackID]; exists {
 		s.tracksMu.Unlock()
+
 		return fmt.Errorf("%w: %s", ErrTrackAlreadyExists, info.TrackID)
 	}
 
 	encoderBuilder, err := getOrCreateEncoderBuilder(info)
 	if err != nil {
 		s.tracksMu.Unlock()
+
 		return err
 	}
 
@@ -406,6 +411,7 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 	encodedReader, err := mediaTrack.NewEncodedReader(mimeType)
 	if err != nil {
 		s.tracksMu.Unlock()
+
 		return err
 	}
 
@@ -455,6 +461,7 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 		rtpSender, err := s.peerConnection.AddTrack(videoTrack)
 		if err != nil {
 			s.tracksMu.Unlock()
+
 			return err
 		}
 		track.rtpSender = rtpSender
@@ -722,7 +729,9 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 
 		// Only update encoder for tracks with positive bitrate (like NuroSender)
 		if trackBitrate > 0 {
+			track.bitrateMu.Lock()
 			currentBitrate := int(track.bitrateTracker.GetBitrate())
+			track.bitrateMu.Unlock()
 			if !updateEncoderBitrate(track, currentBitrate, trackBitrate) {
 				s.log.Warnf("No compatible encoder controller for track %s", track.info.TrackID)
 			}
@@ -756,9 +765,11 @@ func (s *RTCSender) runEncodeLoop(ctx context.Context, trackID string, track *En
 			// branch for tests/mocks and custom non-blocking sources.
 			if errors.Is(err, ErrNoFrameAvailable) {
 				time.Sleep(5 * time.Millisecond)
+
 				continue
 			}
 			s.log.Errorf("Error processing track %s: %v", trackID, err)
+
 			continue
 		}
 		if hasFrame {
@@ -793,7 +804,9 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 		dequeuedAtWallUs = cfs.LastDequeueWallUs()
 	}
 
+	track.bitrateMu.Lock()
 	track.bitrateTracker.AddFrame(len(encoded.Data), tAfterRead)
+	track.bitrateMu.Unlock()
 
 	writeErr := videoTrack.WriteSample(media.Sample{
 		Data:     encoded.Data,
