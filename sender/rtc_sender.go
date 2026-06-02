@@ -71,6 +71,9 @@ type EncodedTrack struct {
 	framesEncoded        atomic.Uint64
 	totalEncodeTimeNs    atomic.Uint64
 	totalSendQueueTimeNs atomic.Uint64
+
+	encodeCancel context.CancelFunc
+	encodeDone   chan struct{}
 }
 
 // EncodedFrameCallback is called after each VP8 frame is encoded with the
@@ -435,6 +438,7 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 		videoSource:    frameSource,
 		bitrateTracker: codec.NewBitrateTracker(300 * time.Millisecond),
 		mimeType:       mimeType,
+		encodeDone:     make(chan struct{}),
 	}
 
 	// Mark the frame buffer as initialized after successful track creation
@@ -458,6 +462,11 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 			}
 		}()
 	}
+
+	track := s.tracks[info.TrackID]
+	trackCtx, trackCancel := context.WithCancel(context.Background())
+	track.encodeCancel = trackCancel
+	go s.runEncodeLoop(trackCtx, info.TrackID, track)
 
 	return nil
 }
@@ -624,7 +633,7 @@ func (s *RTCSender) AcceptAnswer(answer *webrtc.SessionDescription) error {
 	return s.peerConnection.SetRemoteDescription(*answer)
 }
 
-// Start begins the encoding and bitrate control loop.
+// Start begins the bitrate control loop.
 func (s *RTCSender) Start(ctx context.Context) error {
 	// Wait for estimator
 	var estimator cc.BandwidthEstimator
@@ -634,8 +643,8 @@ func (s *RTCSender) Start(ctx context.Context) error {
 		return nil
 	}
 
-	// Combined encoding and bitrate control loop
-	ticker := time.NewTicker(100 * time.Millisecond) // 10 Hz for encoding (matching 10fps input)
+	// Keep GCC bitrate updates at 100ms cadence.
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
@@ -643,12 +652,8 @@ func (s *RTCSender) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			// Check bitrate every 100ms
 			targetBitrate := estimator.GetTargetBitrate()
 			s.updateBitrate(targetBitrate)
-
-			// Process encoded frames for all tracks
-			s.processEncodedFrames()
 		}
 	}
 }
@@ -725,12 +730,50 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 	}
 }
 
+func (s *RTCSender) runEncodeLoop(ctx context.Context, trackID string, track *EncodedTrack) {
+	defer close(track.encodeDone)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		hasFrame, err := s.encodeAndSendTrack(trackID, track)
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, ErrBufferClosed) {
+				return
+			}
+			if errors.Is(err, ErrNoFrameAvailable) {
+				time.Sleep(5 * time.Millisecond)
+				continue
+			}
+			s.log.Errorf("Error processing track %s: %v", trackID, err)
+			continue
+		}
+		if hasFrame {
+			s.tracksMu.Lock()
+			s.noEncodedFrame = false
+			s.tracksMu.Unlock()
+		}
+	}
+}
+
 // encodeAndSendTrack reads, encodes, and sends a single track's frame.
 // Returns true if a frame was successfully processed, or an error.
 func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (bool, error) {
+	s.tracksMu.RLock()
+	encodedReader := track.encodedReader
+	videoTrack := track.videoTrack
+	videoSource := track.videoSource
+	onEncodedFrame := s.onEncodedFrame
+	onFrameSent := s.onFrameSent
+	s.tracksMu.RUnlock()
+
 	// Read includes VP8 encode — this is the expensive call.
 	tBeforeRead := time.Now()
-	encoded, release, err := track.encodedReader.Read()
+	encoded, release, err := encodedReader.Read()
 	if err != nil {
 		return false, err
 	}
@@ -738,14 +781,14 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 
 	// Per-frame stamps; non-FrameBuffer sources report 0.
 	var captureTSUs, dequeuedAtWallUs int64
-	if cfs, ok := track.videoSource.(*FrameBuffer); ok {
+	if cfs, ok := videoSource.(*FrameBuffer); ok {
 		captureTSUs = cfs.LastCaptureTSUs()
 		dequeuedAtWallUs = cfs.LastDequeueWallUs()
 	}
 
 	track.bitrateTracker.AddFrame(len(encoded.Data), tAfterRead)
 
-	writeErr := track.videoTrack.WriteSample(media.Sample{
+	writeErr := videoTrack.WriteSample(media.Sample{
 		Data:     encoded.Data,
 		Duration: time.Second / 10,
 	})
@@ -762,13 +805,13 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 		track.totalSendQueueTimeNs.Add(uint64(d.Nanoseconds())) //nolint:gosec // G115: bounded > 0 by guard above
 	}
 
-	if s.onEncodedFrame != nil {
+	if onEncodedFrame != nil {
 		isKey := len(encoded.Data) > 0 && (encoded.Data[0]&0x01) == 0
-		s.onEncodedFrame(trackID, encoded.Data, isKey)
+		onEncodedFrame(trackID, encoded.Data, isKey)
 	}
 
-	if s.onFrameSent != nil {
-		s.onFrameSent(trackID, captureTSUs, dequeuedAtWallUs,
+	if onFrameSent != nil {
+		onFrameSent(trackID, captureTSUs, dequeuedAtWallUs,
 			tAfterRead.UnixMicro(), tAfterWrite.UnixMicro(), writeErr != nil)
 	}
 
@@ -777,64 +820,9 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	return true, nil
 }
 
-// processEncodedFrames reads and sends encoded frames for all tracks.
-// Encoding happens in parallel (one goroutine per track) because
-// encodedReader.Read() includes VP8 encoding via vpx_codec_encode(),
-// which takes ~5-10ms per 640x480 frame. Sequential iteration would
-// serialize 14 encodes into ~70-140ms, exceeding the 100ms tick interval.
-func (s *RTCSender) processEncodedFrames() {
-	s.tracksMu.RLock()
-
-	totalTracks := len(s.tracks)
-	if totalTracks == 0 {
-		s.tracksMu.RUnlock()
-
-		return
-	}
-
-	type trackResult struct {
-		hasFrame bool
-		err      error
-	}
-
-	var wg sync.WaitGroup
-	results := make([]trackResult, totalTracks)
-	i := 0
-
-	for trackID, track := range s.tracks {
-		idx := i
-		i++
-		wg.Add(1)
-
-		go func(trackID string, track *EncodedTrack) {
-			defer wg.Done()
-
-			hasFrame, err := s.encodeAndSendTrack(trackID, track)
-			results[idx] = trackResult{hasFrame: hasFrame, err: err}
-		}(trackID, track)
-	}
-
-	wg.Wait()
-	s.tracksMu.RUnlock()
-
-	allHaveErrors := true
-
-	for _, r := range results {
-		if r.hasFrame {
-			allHaveErrors = false
-
-			break
-		}
-
-		if r.err != nil && !errors.Is(r.err, ErrNoFrameAvailable) {
-			s.log.Errorf("Error processing track: %v", r.err)
-		}
-	}
-
-	s.tracksMu.Lock()
-	s.noEncodedFrame = allHaveErrors
-	s.tracksMu.Unlock()
-}
+// processEncodedFrames used to run tick-driven encoding and is now a no-op.
+// Encoding is event-driven via per-track goroutines started in AddVideoTrack.
+func (s *RTCSender) processEncodedFrames() {}
 
 // SetBitrateAllocation sets custom bitrate allocation for tracks.
 // allocation is a map of track ID to arbitrary positive numbers representing relative weights
@@ -960,17 +948,35 @@ func (s *RTCSender) Close() error {
 		s.rtcpCancel = nil
 	}
 
-	s.tracksMu.Lock()
-	defer s.tracksMu.Unlock()
-
+	s.tracksMu.RLock()
+	tracks := make([]*EncodedTrack, 0, len(s.tracks))
 	for _, track := range s.tracks {
+		tracks = append(tracks, track)
+	}
+	s.tracksMu.RUnlock()
+
+	for _, track := range tracks {
+		if track.encodeCancel != nil {
+			track.encodeCancel()
+		}
+	}
+	for _, track := range tracks {
 		_ = track.videoSource.Close()
 		_ = track.encodedReader.Close()
+	}
+	for _, track := range tracks {
+		if track.encodeDone != nil {
+			<-track.encodeDone
+		}
+	}
+	for _, track := range tracks {
 		_ = track.mediaTrack.Close()
 	}
 
+	s.tracksMu.Lock()
 	// Clear audio tracks (TrackLocalStaticSample has no Close method)
 	s.audioTracks = nil
+	s.tracksMu.Unlock()
 
 	if s.peerConnection != nil {
 		return s.peerConnection.Close()

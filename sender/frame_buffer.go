@@ -128,8 +128,8 @@ func (f *FrameBuffer) ResetInitialized() {
 }
 
 // Read returns the next available frame from the buffer.
-// When initialized (normal operation), returns immediately with ErrNoFrameAvailable
-// if no frame is ready. When not initialized (encoder init), blocks up to 100ms
+// When initialized (normal operation), it blocks until a frame arrives or the
+// buffer is closed. When not initialized (encoder init), it blocks up to 100ms
 // and returns a black frame for codec property detection.
 //
 // Side effect: stores the popped frame's captureTSUs for LastCaptureTSUs.
@@ -137,7 +137,7 @@ func (f *FrameBuffer) ResetInitialized() {
 // lookahead can still correlate the previously-read real frame.
 func (f *FrameBuffer) Read() (image.Image, func(), error) {
 	if f.initialized {
-		// Non-blocking fast path for normal operation.
+		// Blocking path for steady-state encode loops.
 		select {
 		case fm := <-f.frameChan:
 			f.lastCaptureTSUs.Store(fm.captureTSUs)
@@ -146,8 +146,6 @@ func (f *FrameBuffer) Read() (image.Image, func(), error) {
 			return fm.img, func() {}, nil
 		case <-f.closeChan:
 			return nil, func() {}, ErrBufferClosed
-		default:
-			return nil, func() {}, ErrNoFrameAvailable
 		}
 	}
 
