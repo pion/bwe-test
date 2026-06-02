@@ -557,8 +557,13 @@ func (s *RTCSender) SendFrameWithCaptureTS(trackID string, frame image.Image, ca
 	}
 
 	evicted, err := frameBuffer.SendFrameWithCaptureTS(frame, captureTSUs)
-	if evicted && s.onFrameSent != nil {
-		s.onFrameSent(trackID, 0, 0, 0, time.Now().UnixMicro(), true)
+	if evicted {
+		s.tracksMu.RLock()
+		onFrameSent := s.onFrameSent
+		s.tracksMu.RUnlock()
+		if onFrameSent != nil {
+			onFrameSent(trackID, 0, 0, 0, time.Now().UnixMicro(), true)
+		}
 	}
 
 	return err
@@ -844,10 +849,6 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	return true, nil
 }
 
-// Deprecated: processEncodedFrames used to run tick-driven encoding.
-// Encoding is now event-driven via per-track goroutines started in AddVideoTrack.
-func (s *RTCSender) processEncodedFrames() {}
-
 // SetBitrateAllocation sets custom bitrate allocation for tracks.
 // allocation is a map of track ID to arbitrary positive numbers representing relative weights
 // The values will be normalized internally (each value divided by sum of all values)
@@ -984,16 +985,20 @@ func (s *RTCSender) Close() error {
 			track.encodeCancel()
 		}
 	}
+	// Close the source first; this makes the encode goroutine's pending
+	// Read return ErrBufferClosed.
 	for _, track := range tracks {
 		_ = track.videoSource.Close()
-		_ = track.encodedReader.Close()
 	}
+	// Wait for the encode goroutine to exit before closing encodedReader /
+	// mediaTrack so Close cannot race a concurrent Read on those.
 	for _, track := range tracks {
 		if track.encodeDone != nil {
 			<-track.encodeDone
 		}
 	}
 	for _, track := range tracks {
+		_ = track.encodedReader.Close()
 		_ = track.mediaTrack.Close()
 	}
 

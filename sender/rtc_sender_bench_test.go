@@ -36,57 +36,6 @@ func newBenchSender(b *testing.B, numTracks int) *RTCSender {
 	return sender
 }
 
-// BenchmarkProcessEncodedFrames_NoFrames measures the hot-path cost of
-// processEncodedFrames when no frames are available (the common case between
-// frame arrivals). Before: parallel goroutines + WaitGroup per tick.
-// After: sequential non-blocking Read loop.
-func BenchmarkProcessEncodedFrames_NoFrames(b *testing.B) {
-	for _, numTracks := range []int{1, 4, 14} {
-		b.Run(trackCountName(numTracks), func(b *testing.B) {
-			sender := newBenchSender(b, numTracks)
-			defer func() { _ = sender.Close() }()
-
-			b.ReportAllocs()
-			b.ResetTimer()
-			for range b.N {
-				sender.processEncodedFrames()
-			}
-		})
-	}
-}
-
-// BenchmarkProcessEncodedFrames_WithFrames measures processEncodedFrames when
-// every track has a frame ready. This exercises the encode+write path.
-func BenchmarkProcessEncodedFrames_WithFrames(b *testing.B) {
-	for _, numTracks := range []int{1, 4, 14} {
-		b.Run(trackCountName(numTracks), func(b *testing.B) {
-			sender := newBenchSender(b, numTracks)
-			defer func() { _ = sender.Close() }()
-
-			// Pre-create test frame
-			testImg := image.NewYCbCr(
-				image.Rect(0, 0, 1280, 720),
-				image.YCbCrSubsampleRatio420,
-			)
-
-			b.ReportAllocs()
-			b.ResetTimer()
-			for range b.N {
-				// Feed a frame to every track
-				sender.tracksMu.RLock()
-				for _, track := range sender.tracks {
-					if fb, ok := track.videoSource.(*FrameBuffer); ok {
-						_ = fb.SendFrame(testImg)
-					}
-				}
-				sender.tracksMu.RUnlock()
-
-				sender.processEncodedFrames()
-			}
-		})
-	}
-}
-
 // BenchmarkUpdateBitrate measures the bitrate update path.
 // Before: Infof logging per tick. After: Debugf (no-op at default level).
 func BenchmarkUpdateBitrate(b *testing.B) {
