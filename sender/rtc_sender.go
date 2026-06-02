@@ -28,7 +28,10 @@ import (
 	"github.com/pion/webrtc/v4/pkg/media"
 )
 
-const transportCCRtcpfb = "transport-cc"
+const (
+	transportCCRtcpfb   = "transport-cc"
+	encodeHealthTimeout = 2 * time.Second
+)
 
 // Static errors for err113 compliance.
 var (
@@ -71,6 +74,7 @@ type EncodedTrack struct {
 	framesEncoded        atomic.Uint64
 	totalEncodeTimeNs    atomic.Uint64
 	totalSendQueueTimeNs atomic.Uint64
+	lastEncodeAtWallUs   atomic.Int64
 
 	encodeCancel context.CancelFunc
 	encodeDone   chan struct{}
@@ -114,9 +118,6 @@ type RTCSender struct {
 
 	// Bitrate allocation (protected by tracksMu)
 	bitrateAllocation map[string]float64 // Track ID -> percentage (0.0 to 1.0)
-
-	// Frame processing status (protected by tracksMu)
-	noEncodedFrame bool
 
 	// Cancel function for RTCP reader goroutines. Replaced on each SetupPeerConnection.
 	rtcpCancel context.CancelFunc
@@ -169,7 +170,6 @@ func NewRTCSender(opts ...Option) (*RTCSender, error) {
 		audioTracks:       make(map[string]*webrtc.TrackLocalStaticSample),
 		estimatorChan:     make(chan cc.BandwidthEstimator, 1), // Buffered to avoid blocking
 		bitrateAllocation: make(map[string]float64),
-		noEncodedFrame:    false,
 		ccLogWriter:       io.Discard,
 		log:               logging.NewDefaultLoggerFactory().NewLogger("nuro_sender"),
 	}
@@ -378,14 +378,15 @@ func getOrCreateEncoderBuilder(info VideoTrackInfo) (codec.VideoEncoderBuilder, 
 // AddVideoTrack adds a new video track.
 func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 	s.tracksMu.Lock()
-	defer s.tracksMu.Unlock()
 
 	if _, exists := s.tracks[info.TrackID]; exists {
+		s.tracksMu.Unlock()
 		return fmt.Errorf("%w: %s", ErrTrackAlreadyExists, info.TrackID)
 	}
 
 	encoderBuilder, err := getOrCreateEncoderBuilder(info)
 	if err != nil {
+		s.tracksMu.Unlock()
 		return err
 	}
 
@@ -404,6 +405,7 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 	mimeType := encoderBuilder.RTPCodec().MimeType
 	encodedReader, err := mediaTrack.NewEncodedReader(mimeType)
 	if err != nil {
+		s.tracksMu.Unlock()
 		return err
 	}
 
@@ -414,6 +416,7 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 		info.TrackID,
 	)
 	if err != nil {
+		s.tracksMu.Unlock()
 		_ = encodedReader.Close()
 		_ = mediaTrack.Close()
 
@@ -423,13 +426,14 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 	// Store track info
 	videoMediaTrack, ok := mediaTrack.(*mediadevices.VideoTrack)
 	if !ok {
+		s.tracksMu.Unlock()
 		_ = encodedReader.Close()
 		_ = mediaTrack.Close()
 
 		return ErrFailedToCastVideoTrack
 	}
 
-	s.tracks[info.TrackID] = &EncodedTrack{
+	track := &EncodedTrack{
 		info:           info,
 		videoTrack:     videoTrack,
 		mediaTrack:     videoMediaTrack,
@@ -440,6 +444,8 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 		mimeType:       mimeType,
 		encodeDone:     make(chan struct{}),
 	}
+	track.lastEncodeAtWallUs.Store(time.Now().UnixMicro())
+	s.tracks[info.TrackID] = track
 
 	// Mark the frame buffer as initialized after successful track creation
 	frameSource.SetInitialized()
@@ -448,9 +454,10 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 	if s.peerConnection != nil {
 		rtpSender, err := s.peerConnection.AddTrack(videoTrack)
 		if err != nil {
+			s.tracksMu.Unlock()
 			return err
 		}
-		s.tracks[info.TrackID].rtpSender = rtpSender
+		track.rtpSender = rtpSender
 
 		// Handle incoming RTCP
 		go func() {
@@ -463,9 +470,9 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 		}()
 	}
 
-	track := s.tracks[info.TrackID]
 	trackCtx, trackCancel := context.WithCancel(context.Background())
 	track.encodeCancel = trackCancel
+	s.tracksMu.Unlock()
 	go s.runEncodeLoop(trackCtx, info.TrackID, track)
 
 	return nil
@@ -745,6 +752,8 @@ func (s *RTCSender) runEncodeLoop(ctx context.Context, trackID string, track *En
 			if ctx.Err() != nil || errors.Is(err, ErrBufferClosed) {
 				return
 			}
+			// FrameBuffer-backed readers block until frame-or-close. Keep this
+			// branch for tests/mocks and custom non-blocking sources.
 			if errors.Is(err, ErrNoFrameAvailable) {
 				time.Sleep(5 * time.Millisecond)
 				continue
@@ -753,9 +762,7 @@ func (s *RTCSender) runEncodeLoop(ctx context.Context, trackID string, track *En
 			continue
 		}
 		if hasFrame {
-			s.tracksMu.Lock()
-			s.noEncodedFrame = false
-			s.tracksMu.Unlock()
+			track.lastEncodeAtWallUs.Store(time.Now().UnixMicro())
 		}
 	}
 }
@@ -820,8 +827,8 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	return true, nil
 }
 
-// processEncodedFrames used to run tick-driven encoding and is now a no-op.
-// Encoding is event-driven via per-track goroutines started in AddVideoTrack.
+// Deprecated: processEncodedFrames used to run tick-driven encoding.
+// Encoding is now event-driven via per-track goroutines started in AddVideoTrack.
 func (s *RTCSender) processEncodedFrames() {}
 
 // SetBitrateAllocation sets custom bitrate allocation for tracks.
@@ -1042,5 +1049,16 @@ func (s *RTCSender) GetEncodeFrameOk() bool {
 	s.tracksMu.RLock()
 	defer s.tracksMu.RUnlock()
 
-	return !s.noEncodedFrame
+	if len(s.tracks) == 0 {
+		return true
+	}
+
+	cutoffUs := time.Now().Add(-encodeHealthTimeout).UnixMicro()
+	for _, track := range s.tracks {
+		if track.lastEncodeAtWallUs.Load() >= cutoffUs {
+			return true
+		}
+	}
+
+	return false
 }
