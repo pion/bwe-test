@@ -770,8 +770,10 @@ func (s *RTCSender) runEncodeLoop(ctx context.Context, trackID string, track *En
 			if ctx.Err() != nil || errors.Is(err, ErrBufferClosed) {
 				return
 			}
-			// FrameBuffer-backed readers block until frame-or-close. Keep this
-			// branch for tests/mocks and custom non-blocking sources.
+			// FrameBuffer.Read is non-blocking; sleep briefly so we don't
+			// busy-spin between frame arrivals while still leaving the vpx
+			// encoder's internal mutex free for concurrent DynamicQPControl
+			// bitrate updates.
 			if errors.Is(err, ErrNoFrameAvailable) {
 				time.Sleep(5 * time.Millisecond)
 
