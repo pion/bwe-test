@@ -460,6 +460,10 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 	if s.peerConnection != nil {
 		rtpSender, err := s.peerConnection.AddTrack(videoTrack)
 		if err != nil {
+			delete(s.tracks, info.TrackID)
+			_ = track.videoSource.Close()
+			_ = track.encodedReader.Close()
+			_ = track.mediaTrack.Close()
 			s.tracksMu.Unlock()
 
 			return err
@@ -994,8 +998,9 @@ func (s *RTCSender) Close() error {
 	}
 
 	s.tracksMu.Lock()
-	// Clear audio tracks (TrackLocalStaticSample has no Close method)
-	s.audioTracks = nil
+	s.tracks = make(map[string]*EncodedTrack)
+	// TrackLocalStaticSample has no Close method; reset map to avoid stale handles.
+	s.audioTracks = make(map[string]*webrtc.TrackLocalStaticSample)
 	s.tracksMu.Unlock()
 
 	if s.peerConnection != nil {
