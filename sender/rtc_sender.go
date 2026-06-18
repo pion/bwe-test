@@ -486,6 +486,7 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 		}()
 	}
 
+	//nolint:gosec // G118: trackCancel is stored in track.encodeCancel and called during teardown (Close/RemoveTrack).
 	trackCtx, trackCancel := context.WithCancel(context.Background())
 	track.encodeCancel = trackCancel
 	s.tracksMu.Unlock()
@@ -763,6 +764,19 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 func (s *RTCSender) runEncodeLoop(ctx context.Context, trackID string, track *EncodedTrack) {
 	defer close(track.encodeDone)
 
+	// The encode loop waits on the buffer's enqueue signal instead of polling
+	// on empty. videoSource is always a *FrameBuffer (set in AddVideoTrack) and
+	// never swapped (recreateEncoder only replaces encodedReader), so these
+	// channels stay valid across encoder recreation.
+	fb, ok := track.videoSource.(*FrameBuffer)
+	if !ok {
+		s.log.Errorf("track %s has no FrameBuffer source; encode loop exiting", trackID)
+
+		return
+	}
+	frameReady := fb.FrameReady()
+	bufClosed := fb.Closed()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -772,19 +786,9 @@ func (s *RTCSender) runEncodeLoop(ctx context.Context, trackID string, track *En
 
 		hasFrame, err := s.encodeAndSendTrack(trackID, track)
 		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, ErrBufferClosed) {
+			if s.handleEncodeErr(ctx, err, trackID, frameReady, bufClosed) {
 				return
 			}
-			// Source had no frame this iteration. Sleep briefly to avoid
-			// busy-spinning and to release the vpx encoder mutex (held
-			// during Read) between attempts so concurrent DynamicQPControl
-			// bitrate updates can acquire it.
-			if errors.Is(err, ErrNoFrameAvailable) {
-				time.Sleep(5 * time.Millisecond)
-
-				continue
-			}
-			s.log.Errorf("Error processing track %s: %v", trackID, err)
 
 			continue
 		}
@@ -792,6 +796,35 @@ func (s *RTCSender) runEncodeLoop(ctx context.Context, trackID string, track *En
 			track.lastEncodeAtWallUs.Store(time.Now().UnixMicro())
 		}
 	}
+}
+
+// handleEncodeErr processes an error from encodeAndSendTrack. It returns true
+// when the encode loop should exit. For ErrNoFrameAvailable the source had no
+// frame this iteration; encodeAndSendTrack has already released the vpx encoder
+// mutex (held only across Read), so we wait OUTSIDE it — recreateEncoder and
+// DynamicQPControl bitrate updates can acquire encoderMu.Lock while we idle. We
+// block on the enqueue signal instead of polling so a freshly pushed frame is
+// picked up immediately, eliminating poll-induced buffer-wait latency.
+func (s *RTCSender) handleEncodeErr(
+	ctx context.Context, err error, trackID string,
+	frameReady, bufClosed <-chan struct{},
+) bool {
+	if ctx.Err() != nil || errors.Is(err, ErrBufferClosed) {
+		return true
+	}
+	if errors.Is(err, ErrNoFrameAvailable) {
+		select {
+		case <-ctx.Done():
+			return true
+		case <-bufClosed:
+			return true
+		case <-frameReady:
+			return false
+		}
+	}
+	s.log.Errorf("Error processing track %s: %v", trackID, err)
+
+	return false
 }
 
 // encodeAndSendTrack reads, encodes, and sends a single track's frame.

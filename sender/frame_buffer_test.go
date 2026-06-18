@@ -98,7 +98,7 @@ func TestFrameBuffer_BufferFull(t *testing.T) {
 	fb := NewFrameBuffer(640, 480)
 	defer func() { _ = fb.Close() }()
 
-	// Fill the buffer beyond capacity (buffer size is 8)
+	// Fill the buffer beyond capacity (buffer size is 1)
 	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
 
 	// Send more frames than buffer capacity
@@ -237,19 +237,21 @@ func TestFrameBuffer_SendWithCaptureTs_RoundTrips(t *testing.T) {
 
 	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
 
+	// Capacity 1: drain between sends so each frame round-trips without
+	// being evicted by the next. Each Read advances LastCaptureTSUs to the
+	// timestamp of the frame that was just returned.
 	evicted, err := fb.SendFrameWithCaptureTS(testImg, 111)
 	require.NoError(t, err)
 	require.False(t, evicted)
-	evicted, err = fb.SendFrameWithCaptureTS(testImg, 222)
-	require.NoError(t, err)
-	require.False(t, evicted)
 
-	// Each Read advances LastCaptureTSUs to the timestamp of the frame
-	// that was just returned.
 	_, release, err := fb.Read()
 	require.NoError(t, err)
 	release()
 	assert.Equal(t, int64(111), fb.LastCaptureTSUs())
+
+	evicted, err = fb.SendFrameWithCaptureTS(testImg, 222)
+	require.NoError(t, err)
+	require.False(t, evicted)
 
 	_, release, err = fb.Read()
 	require.NoError(t, err)
@@ -373,15 +375,14 @@ func TestFrameBuffer_SendWithCaptureTs_OverflowReportsEviction(t *testing.T) {
 	fb := NewFrameBuffer(640, 480)
 	defer func() { _ = fb.Close() }()
 
-	// Buffer capacity is 2. The first 2 sends fit; the 3rd must evict the
+	// Buffer capacity is 1. The first send fits; the 2nd must evict the
 	// oldest entry so downstream SLO accounting can see the overload.
 	testImg := image.NewRGBA(image.Rect(0, 0, 640, 480))
-	for i := range 2 {
-		evicted, err := fb.SendFrameWithCaptureTS(testImg, int64(i+1))
-		require.NoError(t, err)
-		require.False(t, evicted, "send %d should not evict before capacity", i)
-	}
-	evicted, err := fb.SendFrameWithCaptureTS(testImg, 3)
+	evicted, err := fb.SendFrameWithCaptureTS(testImg, 1)
+	require.NoError(t, err)
+	require.False(t, evicted, "first send should not evict before capacity")
+
+	evicted, err = fb.SendFrameWithCaptureTS(testImg, 2)
 	require.NoError(t, err)
 	assert.True(t, evicted, "send beyond capacity should report eviction")
 }
