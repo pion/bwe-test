@@ -73,6 +73,7 @@ type frameWithMeta struct {
 type FrameBuffer struct {
 	frameChan         chan frameWithMeta
 	closeChan         chan struct{}
+	notifyChan        chan struct{}
 	closeOnce         sync.Once
 	width             int
 	height            int
@@ -84,25 +85,53 @@ type FrameBuffer struct {
 
 // NewFrameBuffer creates a new frame buffer with the specified dimensions.
 //
-// Capacity 2: one in-flight + one staged. Sized for low-latency real-time
-// senders where source > encoder rate. When the source is steady (no bursts
-// and no encoder slack to drain a backlog), encoder throughput is set by
-// encoder CPU capacity regardless of capacity, so a deeper queue only adds
-// wait time without delivering more frames. Capacity 2 tolerates one frame
-// of arrival/encode jitter; capacity 1 would drop on any same-tick burst.
+// Capacity 1: a single-slot "latest frame" mailbox. At most one frame may be
+// in-flight in the encoder while at most one newer frame waits staged; each
+// new SendFrame overwrites the staged frame (drop-oldest in
+// SendFrameWithCaptureTS), so the encoder always pulls the freshest image and
+// stale frames are discarded under load. This minimizes per-frame buffer wait
+// at the cost of dropping on any same-tick burst — intentional for
+// low-latency teleoperation where a newer frame always supersedes an older
+// one. Encoder throughput remains bounded by encoder CPU, not queue depth.
 func NewFrameBuffer(width, height int) *FrameBuffer {
 	return &FrameBuffer{
-		frameChan: make(chan frameWithMeta, 2),
-		closeChan: make(chan struct{}),
-		width:     width,
-		height:    height,
-		id:        "frame-buffer",
+		frameChan:  make(chan frameWithMeta, 1),
+		closeChan:  make(chan struct{}),
+		notifyChan: make(chan struct{}, 1),
+		width:      width,
+		height:     height,
+		id:         "frame-buffer",
 	}
 }
 
 // ID returns the identifier for this video source.
 func (f *FrameBuffer) ID() string {
 	return f.id
+}
+
+// FrameReady returns a channel that receives a value when a frame is
+// enqueued. It is buffered (cap 1) and edge-triggered: signal() drops the
+// notification if one is already pending, so a consumer that drains all
+// available frames after each wake-up never misses a frame. This lets the
+// encode loop block for a frame instead of polling, eliminating poll-induced
+// buffer-wait latency.
+func (f *FrameBuffer) FrameReady() <-chan struct{} {
+	return f.notifyChan
+}
+
+// Closed returns a channel closed when the buffer is closed, so a consumer
+// blocked on FrameReady can wake and observe ErrBufferClosed.
+func (f *FrameBuffer) Closed() <-chan struct{} {
+	return f.closeChan
+}
+
+// signal performs a non-blocking notify that a frame is available. If a
+// notification is already pending it is a no-op (edge-triggered).
+func (f *FrameBuffer) signal() {
+	select {
+	case f.notifyChan <- struct{}{}:
+	default:
+	}
 }
 
 // Close stops the frame buffer and releases resources.
@@ -218,6 +247,8 @@ func (f *FrameBuffer) SendFrameWithCaptureTS(frame image.Image, captureTSUs int6
 
 	select {
 	case f.frameChan <- fm:
+		f.signal()
+
 		return false, nil
 	default:
 		// Buffer full - drop oldest frame and add the new one.
@@ -230,6 +261,8 @@ func (f *FrameBuffer) SendFrameWithCaptureTS(frame image.Image, captureTSUs int6
 
 		select {
 		case f.frameChan <- fm:
+			f.signal()
+
 			return evicted, nil
 		default:
 			return evicted, ErrFailedToAddFrameAfterDrop

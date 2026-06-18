@@ -687,20 +687,25 @@ func TestRTCSender_OnFrameSent_FiresWithCaptureTs(t *testing.T) {
 	})
 
 	// Event-driven encode loop is always running, so feed frames at a small
-	// interval to avoid overflowing the 2-slot source buffer while still
-	// exercising capture timestamp echoing through the callback path.
+	// interval while exercising capture timestamp echoing through the callback
+	// path. The source buffer is a single-slot newest-wins mailbox (capacity
+	// 1): under encoder backpressure older frames may be evicted, but the
+	// final frame is never superseded, so it must round-trip and echo its
+	// captureTS on the success path.
 	testImg := image.NewYCbCr(image.Rect(0, 0, 640, 480), image.YCbCrSubsampleRatio420)
-	const wantCaptureTS int64 = 1_700_000_000_000
-	for i, ts := range []int64{
-		wantCaptureTS,
-		wantCaptureTS + 33_000,
-		wantCaptureTS + 66_000,
-		wantCaptureTS + 99_000,
-		wantCaptureTS + 132_000,
-	} {
+	const baseCaptureTS int64 = 1_700_000_000_000
+	timestamps := []int64{
+		baseCaptureTS,
+		baseCaptureTS + 33_000,
+		baseCaptureTS + 66_000,
+		baseCaptureTS + 99_000,
+		baseCaptureTS + 132_000,
+	}
+	for i, ts := range timestamps {
 		require.NoError(t, sender.SendFrameWithCaptureTS("cam-0", testImg, ts), "send %d", i)
 		time.Sleep(10 * time.Millisecond)
 	}
+	wantCaptureTS := timestamps[len(timestamps)-1]
 
 	deadline := time.Now().Add(2 * time.Second)
 	var got *sentEvent
@@ -709,7 +714,7 @@ func TestRTCSender_OnFrameSent_FiresWithCaptureTs(t *testing.T) {
 
 		mu.Lock()
 		for i := range events {
-			if events[i].captureTSUs == wantCaptureTS {
+			if events[i].captureTSUs == wantCaptureTS && !events[i].dropped {
 				got = &events[i]
 
 				break
@@ -765,20 +770,17 @@ func TestRTCSender_OnFrameSent_FiresWithDroppedOnEviction(t *testing.T) {
 		}
 	})
 
-	// Saturate the 2-slot FrameBuffer, then send extras to force eviction.
-	// The encode goroutine has not been driven, so the buffer never drains
-	// and every send beyond capacity must evict and fire the callback with
-	// dropped=true.
+	// Saturate the single-slot FrameBuffer, then send extras to force
+	// eviction. The encode goroutine has not been driven, so the buffer never
+	// drains and every send beyond capacity (1) must evict and fire the
+	// callback with dropped=true. 5 sends -> 1 fits, 4 evict.
 	testImg := image.NewYCbCr(image.Rect(0, 0, 640, 480), image.YCbCrSubsampleRatio420)
-	for range 2 {
-		require.NoError(t, sender.SendFrameWithCaptureTS("cam-0", testImg, 1))
-	}
-	for range 3 {
+	for range 5 {
 		require.NoError(t, sender.SendFrameWithCaptureTS("cam-0", testImg, 1))
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	assert.Equal(t, 3, dropped, "each over-capacity send should fire one dropped callback")
+	assert.Equal(t, 4, dropped, "each over-capacity send should fire one dropped callback")
 	assert.Equal(t, 0, nonDrop, "no encoded-send callback should fire without driving the encoder")
 }
