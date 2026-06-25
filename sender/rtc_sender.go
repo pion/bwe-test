@@ -84,6 +84,24 @@ type EncodedTrack struct {
 	totalSendQueueTimeNs atomic.Uint64
 	lastEncodeAtWallUs   atomic.Int64
 
+	// targetBitrate is this track's allocated share (bps) last pushed to the
+	// encoder by updateBitrate. Read by GetTrackStats as the W3C
+	// outbound-rtp `targetBitrate`.
+	targetBitrate atomic.Int64
+
+	// Synthesized quality-limitation accounting (pion provides no encoder
+	// feedback, so we infer it). qlCPUNs / qlBandwidthNs accumulate the wall
+	// time spent CPU- / bandwidth-limited; qlLastTickWallUs and qlLastOverruns
+	// are the per-tick baselines used by accumulateQualityLimitation.
+	qlCPUNs          atomic.Uint64
+	qlBandwidthNs    atomic.Uint64
+	qlLastTickWallUs atomic.Int64
+	qlLastOverruns   atomic.Uint64
+
+	// encodeOverruns counts frames evicted from a full buffer because the
+	// producer outpaced the encode loop — the CPU-limited signal.
+	encodeOverruns atomic.Uint64
+
 	encodeCancel context.CancelFunc
 	encodeDone   chan struct{}
 }
@@ -123,6 +141,13 @@ type RTCSender struct {
 
 	// Bandwidth estimation
 	estimatorChan chan cc.BandwidthEstimator
+
+	// availableOutgoingBitrate is the latest GCC estimate (bps), connection-level.
+	// Stored by the Start loop, read by GetTrackStats.
+	availableOutgoingBitrate atomic.Int64
+	// maxBitrate is the configured GCC cap (bps); 0 means no cap. Used to infer
+	// the bandwidth-limited state for quality-limitation accounting.
+	maxBitrate int
 
 	// Bitrate allocation (protected by tracksMu)
 	bitrateAllocation map[string]float64 // Track ID -> percentage (0.0 to 1.0)
@@ -213,6 +238,7 @@ func NewRTCSender(opts ...Option) (*RTCSender, error) {
 // setupGCC sets up Google Congestion Control with the specified initial and max bitrate.
 // A maxBitrate of 0 means no cap (uses GCC default of 50 Mbps).
 func (s *RTCSender) setupGCC(initialBitrate, maxBitrate int) error {
+	s.maxBitrate = maxBitrate
 	controller, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
 		opts := []gcc.Option{gcc.SendSideBWEInitialBitrate(initialBitrate)}
 		if maxBitrate > 0 {
@@ -279,10 +305,24 @@ func (s *RTCSender) setupStats() error {
 // outbound video track. Cumulative since track creation; callers that want
 // per-window deltas should snapshot two reads and subtract.
 type TrackStats struct {
+	// Bandwidth (bps). AvailableOutgoingBitrate is the connection-level GCC
+	// estimate; TargetBitrate is this track's allocated share pushed to the
+	// encoder (W3C outbound-rtp `targetBitrate`).
+	AvailableOutgoingBitrate int
+	TargetBitrate            int
+
 	// Pipeline counters from the local encode loop.
 	FramesEncoded        uint64
 	TotalEncodeTimeNs    uint64 // wall time spent inside encodedReader.Read
 	TotalSendQueueTimeNs uint64 // wall time between Read return and WriteSample return
+
+	// Synthesized quality-limitation durations (seconds), W3C outbound-rtp
+	// `qualityLimitationDurations` semantics. Bandwidth-limited is inferred from
+	// the GCC estimate sitting below the configured max bitrate; CPU-limited is
+	// inferred from the encode loop falling behind (buffer evictions). When GCC
+	// has no max cap, bandwidth-limited cannot be inferred and stays zero.
+	QualityLimitationCPUSeconds       float64
+	QualityLimitationBandwidthSeconds float64
 
 	// Network counters from the Pion stats interceptor.
 	PacketsSent     uint64
@@ -290,6 +330,7 @@ type TrackStats struct {
 	HeaderBytesSent uint64
 	NACKCount       uint32
 	PLICount        uint32
+	FIRCount        uint32
 
 	// Remote receiver counters (from RTCP RR).
 	PacketsReceived           uint64
@@ -318,9 +359,13 @@ func (s *RTCSender) GetTrackStats(trackID string) *TrackStats {
 	}
 
 	out := &TrackStats{
-		FramesEncoded:        track.framesEncoded.Load(),
-		TotalEncodeTimeNs:    track.totalEncodeTimeNs.Load(),
-		TotalSendQueueTimeNs: track.totalSendQueueTimeNs.Load(),
+		AvailableOutgoingBitrate:          int(s.availableOutgoingBitrate.Load()),
+		TargetBitrate:                     int(track.targetBitrate.Load()),
+		FramesEncoded:                     track.framesEncoded.Load(),
+		TotalEncodeTimeNs:                 track.totalEncodeTimeNs.Load(),
+		TotalSendQueueTimeNs:              track.totalSendQueueTimeNs.Load(),
+		QualityLimitationCPUSeconds:       float64(track.qlCPUNs.Load()) / 1e9,
+		QualityLimitationBandwidthSeconds: float64(track.qlBandwidthNs.Load()) / 1e9,
 	}
 
 	s.statsGetterMu.RLock()
@@ -349,6 +394,7 @@ func (s *RTCSender) GetTrackStats(trackID string) *TrackStats {
 	out.HeaderBytesSent = netStats.OutboundRTPStreamStats.HeaderBytesSent
 	out.NACKCount = netStats.OutboundRTPStreamStats.NACKCount
 	out.PLICount = netStats.OutboundRTPStreamStats.PLICount
+	out.FIRCount = netStats.OutboundRTPStreamStats.FIRCount
 
 	out.PacketsReceived = netStats.RemoteInboundRTPStreamStats.PacketsReceived
 	out.PacketsLost = netStats.RemoteInboundRTPStreamStats.PacketsLost
@@ -564,6 +610,10 @@ func (s *RTCSender) SendFrameWithCaptureTS(trackID string, frame image.Image, ca
 
 	evicted, err := frameBuffer.SendFrameWithCaptureTS(frame, captureTSUs)
 	if evicted {
+		// A full buffer means the encode loop is falling behind the producer:
+		// the CPU-limited signal for quality-limitation accounting.
+		track.encodeOverruns.Add(1)
+
 		s.tracksMu.RLock()
 		onFrameSent := s.onFrameSent
 		s.tracksMu.RUnlock()
@@ -682,6 +732,7 @@ func (s *RTCSender) Start(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			targetBitrate := estimator.GetTargetBitrate()
+			s.availableOutgoingBitrate.Store(int64(targetBitrate))
 			s.updateBitrate(targetBitrate)
 		}
 	}
@@ -738,9 +789,12 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 
 	useCustomAllocation := len(s.bitrateAllocation) > 0
 	equalShare := targetBitrate / len(s.tracks)
+	nowUs := time.Now().UnixMicro()
 
 	for trackID, track := range s.tracks {
 		trackBitrate := s.calculateTrackBitrate(trackID, targetBitrate, equalShare, useCustomAllocation)
+		track.targetBitrate.Store(int64(trackBitrate))
+		s.accumulateQualityLimitation(track, nowUs)
 
 		// Only update encoder for tracks with positive bitrate (like NuroSender)
 		if trackBitrate > 0 {
@@ -758,6 +812,39 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 		s.log.Debugf("Updated bitrate to %d bps using custom allocation", targetBitrate)
 	} else {
 		s.log.Debugf("Updated bitrate to %d bps (%d per track)", targetBitrate, equalShare)
+	}
+}
+
+// accumulateQualityLimitation attributes the wall time elapsed since the last
+// tick to a quality-limitation bucket for the track. It is called once per
+// updateBitrate tick (≈100ms) while holding tracksMu. Classification each tick:
+//
+//   - bandwidth-limited: a GCC cap is configured and the current estimate sits
+//     below it, so the rate is being held down by the network;
+//   - else CPU-limited: the encode loop fell behind since the last tick (a
+//     frame was evicted from a full buffer);
+//   - else neither (no accumulation).
+//
+// The first call only establishes the baselines and accumulates nothing.
+func (s *RTCSender) accumulateQualityLimitation(track *EncodedTrack, nowUs int64) {
+	lastUs := track.qlLastTickWallUs.Swap(nowUs)
+	overruns := track.encodeOverruns.Load()
+	prevOverruns := track.qlLastOverruns.Swap(overruns)
+	if lastUs == 0 {
+		return // baseline tick
+	}
+
+	elapsedNs := (nowUs - lastUs) * 1000
+	if elapsedNs <= 0 {
+		return
+	}
+
+	avail := int(s.availableOutgoingBitrate.Load())
+	switch {
+	case s.maxBitrate > 0 && avail < s.maxBitrate:
+		track.qlBandwidthNs.Add(uint64(elapsedNs)) //nolint:gosec // G115: elapsedNs > 0 by guard above
+	case overruns > prevOverruns:
+		track.qlCPUNs.Add(uint64(elapsedNs)) //nolint:gosec // G115: elapsedNs > 0 by guard above
 	}
 }
 
