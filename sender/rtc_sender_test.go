@@ -607,6 +607,7 @@ func TestRTCSender_GetTrackStats_PopulatesNetworkCounters(t *testing.T) {
 				HeaderBytesSent: 7000,
 				NACKCount:       2,
 				PLICount:        1,
+				FIRCount:        3,
 			},
 			RemoteInboundRTPStreamStats: stats.RemoteInboundRTPStreamStats{
 				ReceivedRTPStreamStats: stats.ReceivedRTPStreamStats{
@@ -631,6 +632,7 @@ func TestRTCSender_GetTrackStats_PopulatesNetworkCounters(t *testing.T) {
 	assert.Equal(t, uint64(7000), got.HeaderBytesSent)
 	assert.Equal(t, uint32(2), got.NACKCount)
 	assert.Equal(t, uint32(1), got.PLICount)
+	assert.Equal(t, uint32(3), got.FIRCount)
 
 	assert.Equal(t, uint64(1200), got.PacketsReceived)
 	assert.Equal(t, int64(34), got.PacketsLost)
@@ -639,6 +641,87 @@ func TestRTCSender_GetTrackStats_PopulatesNetworkCounters(t *testing.T) {
 	assert.Equal(t, 40*time.Millisecond, got.RoundTripTime)
 	assert.Equal(t, 4*time.Second, got.TotalRoundTripTime)
 	assert.Equal(t, uint64(100), got.RoundTripTimeMeasurements)
+}
+
+func TestRTCSender_GetTrackStats_BitrateFields(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	err = sender.AddVideoTrack(VideoTrackInfo{
+		TrackID:        "cam-0",
+		Width:          640,
+		Height:         480,
+		EncoderBuilder: &MockVideoEncoderBuilder{},
+	})
+	require.NoError(t, err)
+
+	// Mimic one Start-loop iteration: record the BWE estimate, then allocate.
+	const estimate = 2_500_000
+	sender.availableOutgoingBitrate.Store(int64(estimate))
+	sender.updateBitrate(estimate)
+
+	got := sender.GetTrackStats("cam-0")
+	require.NotNil(t, got)
+	assert.Equal(t, estimate, got.AvailableOutgoingBitrate)
+	// Single track, equal share => the whole estimate is allocated to it.
+	assert.Equal(t, estimate, got.TargetBitrate)
+}
+
+func TestRTCSender_GetTrackStats_QualityLimitation(t *testing.T) {
+	t.Run("bandwidth", func(t *testing.T) {
+		sender, err := NewRTCSender()
+		require.NoError(t, err)
+		defer func() { _ = sender.Close() }()
+
+		require.NoError(t, sender.AddVideoTrack(VideoTrackInfo{
+			TrackID: "cam-0", Width: 640, Height: 480, EncoderBuilder: &MockVideoEncoderBuilder{},
+		}))
+
+		// GCC estimate sits below the configured cap => bandwidth-limited.
+		sender.maxBitrate = 5_000_000
+		sender.availableOutgoingBitrate.Store(1_000_000)
+
+		sender.updateBitrate(1_000_000) // baseline tick
+		time.Sleep(5 * time.Millisecond)
+		sender.updateBitrate(1_000_000) // accumulating tick
+
+		got := sender.GetTrackStats("cam-0")
+		require.NotNil(t, got)
+		assert.Positive(t, got.QualityLimitationBandwidthSeconds,
+			"bandwidth-limited seconds should accumulate when estimate < max")
+		assert.Zero(t, got.QualityLimitationCPUSeconds)
+	})
+
+	t.Run("cpu", func(t *testing.T) {
+		sender, err := NewRTCSender()
+		require.NoError(t, err)
+		defer func() { _ = sender.Close() }()
+
+		require.NoError(t, sender.AddVideoTrack(VideoTrackInfo{
+			TrackID: "cam-0", Width: 640, Height: 480, EncoderBuilder: &MockVideoEncoderBuilder{},
+		}))
+
+		// No cap => bandwidth can't be inferred; a buffer eviction since the
+		// last tick is the CPU-limited signal.
+		sender.maxBitrate = 0
+		sender.availableOutgoingBitrate.Store(1_000_000)
+
+		sender.tracksMu.RLock()
+		track := sender.tracks["cam-0"]
+		sender.tracksMu.RUnlock()
+
+		sender.updateBitrate(1_000_000) // baseline tick
+		track.encodeOverruns.Add(1)     // encode loop fell behind
+		time.Sleep(5 * time.Millisecond)
+		sender.updateBitrate(1_000_000) // accumulating tick
+
+		got := sender.GetTrackStats("cam-0")
+		require.NotNil(t, got)
+		assert.Positive(t, got.QualityLimitationCPUSeconds,
+			"cpu-limited seconds should accumulate on buffer eviction")
+		assert.Zero(t, got.QualityLimitationBandwidthSeconds)
+	})
 }
 
 func TestTrackStats_ZeroValueIsValid(t *testing.T) {
