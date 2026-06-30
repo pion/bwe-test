@@ -169,6 +169,10 @@ type RTCSender struct {
 	statsGetter   stats.Getter
 	statsGetterMu sync.RWMutex
 
+	// absCaptureTime stamps outgoing RTP packets with the abs-capture-time
+	// header extension from each frame's capture timestamp.
+	absCaptureTime *absCaptureTimeInterceptor
+
 	// Logging
 	ccLogWriter io.Writer
 	log         logging.LeveledLogger
@@ -215,6 +219,12 @@ func NewRTCSender(opts ...Option) (*RTCSender, error) {
 	// Register the stats interceptor so GetTrackStats can return RTP/RTCP
 	// counters (PacketsSent, RoundTripTime) per track.
 	if err := sender.setupStats(); err != nil {
+		return nil, err
+	}
+
+	// Register the abs-capture-time header extension and interceptor so each
+	// frame's capture timestamp is carried on outgoing RTP packets.
+	if err := sender.setupAbsCaptureTime(); err != nil {
 		return nil, err
 	}
 
@@ -297,6 +307,56 @@ func (s *RTCSender) setupStats() error {
 		return err
 	}
 	s.registry.Add(senderReports)
+
+	return nil
+}
+
+// rtpSenderSSRC returns the primary SSRC of an RTP sender, matching the
+// resolution used by GetTrackStats. The boolean is false until the sender has
+// been bound and an SSRC is available.
+func rtpSenderSSRC(sender *webrtc.RTPSender) (uint32, bool) {
+	if sender == nil {
+		return 0, false
+	}
+	params := sender.GetParameters()
+	if len(params.Encodings) == 0 {
+		return 0, false
+	}
+	ssrc := uint32(params.Encodings[0].SSRC)
+	if ssrc == 0 {
+		return 0, false
+	}
+
+	return ssrc, true
+}
+
+// stampCaptureTime records a frame's capture timestamp (unix microseconds) on
+// the abs-capture-time interceptor, keyed by the track's SSRC, so the next
+// WriteSample stamps it onto the outgoing packets. A no-op when the interceptor
+// is absent or the SSRC is not yet resolvable.
+func (s *RTCSender) stampCaptureTime(rtpSender *webrtc.RTPSender, captureTSUs int64) {
+	if s.absCaptureTime == nil {
+		return
+	}
+	if ssrc, ok := rtpSenderSSRC(rtpSender); ok {
+		s.absCaptureTime.SetCaptureTSUs(ssrc, captureTSUs)
+	}
+}
+
+// setupAbsCaptureTime registers the abs-capture-time RTP header extension for
+// video and installs the interceptor that stamps it onto outgoing packets from
+// each frame's capture timestamp. The interceptor is a no-op for any stream
+// where the extension was not negotiated.
+func (s *RTCSender) setupAbsCaptureTime() error {
+	if err := s.mediaEngine.RegisterHeaderExtension(
+		webrtc.RTPHeaderExtensionCapability{URI: absCaptureTimeURI},
+		webrtc.RTPCodecTypeVideo,
+	); err != nil {
+		return err
+	}
+
+	s.absCaptureTime = newAbsCaptureTimeInterceptor()
+	s.registry.Add(&absCaptureTimeFactory{it: s.absCaptureTime})
 
 	return nil
 }
@@ -920,6 +980,7 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	s.tracksMu.RLock()
 	videoTrack := track.videoTrack
 	videoSource := track.videoSource
+	rtpSender := track.rtpSender
 	onEncodedFrame := s.onEncodedFrame
 	onFrameSent := s.onFrameSent
 	s.tracksMu.RUnlock()
@@ -947,6 +1008,12 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	track.bitrateMu.Lock()
 	track.bitrateTracker.AddFrame(len(encoded.Data), tAfterRead)
 	track.bitrateMu.Unlock()
+
+	// Stamp this frame's capture time onto the outgoing RTP packets via the
+	// abs-capture-time extension. WriteSample → packetize → interceptor runs
+	// synchronously in this goroutine, and the value is keyed by SSRC, so it is
+	// correct for the packets WriteSample produces even with concurrent tracks.
+	s.stampCaptureTime(rtpSender, captureTSUs)
 
 	writeErr := videoTrack.WriteSample(media.Sample{
 		Data:     encoded.Data,
