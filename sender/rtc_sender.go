@@ -229,9 +229,7 @@ func NewRTCSender(opts ...Option) (*RTCSender, error) {
 
 	// Register the interceptor that encodes each frame's capture timestamp into
 	// the outgoing RTP timestamp.
-	if err := sender.setupCaptureTimestamp(); err != nil {
-		return nil, err
-	}
+	sender.setupCaptureTimestamp()
 
 	// Apply options first (may include custom GCC config)
 	for _, opt := range opts {
@@ -374,11 +372,9 @@ func (s *RTCSender) stampCaptureTime(track *EncodedTrack, captureTSUs int64) {
 // setupCaptureTimestamp installs the interceptor that encodes each frame's
 // capture timestamp into the outgoing RTP timestamp. It is a no-op for any
 // stream/frame where no capture time was supplied via SetCaptureTSUs.
-func (s *RTCSender) setupCaptureTimestamp() error {
+func (s *RTCSender) setupCaptureTimestamp() {
 	s.captureTimestamp = newCaptureTimestampInterceptor()
 	s.registry.Add(&captureTimestampFactory{it: s.captureTimestamp})
-
-	return nil
 }
 
 // TrackStats summarizes per-track network and pipeline statistics for one

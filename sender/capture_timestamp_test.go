@@ -10,6 +10,7 @@ import (
 
 	"github.com/pion/interceptor"
 	"github.com/pion/rtp"
+	"github.com/stretchr/testify/assert"
 )
 
 const (
@@ -48,9 +49,7 @@ func TestCaptureTimestampInterceptor_EncodesCaptureTime(t *testing.T) {
 	_, _ = w.Write(&rtp.Header{Timestamp: 42}, nil, nil)
 	_, _ = w.Write(&rtp.Header{Timestamp: 42}, nil, nil)
 
-	if len(sink.timestamps) != 2 || sink.timestamps[0] != want || sink.timestamps[1] != want {
-		t.Fatalf("got %v, want both == %d", sink.timestamps, want)
-	}
+	assert.Equal(t, []uint32{want, want}, sink.timestamps)
 }
 
 // TestCaptureTimestampInterceptor_PassthroughWhenUnset asserts a frame with no
@@ -62,7 +61,5 @@ func TestCaptureTimestampInterceptor_PassthroughWhenUnset(t *testing.T) {
 
 	_, _ = w.Write(&rtp.Header{Timestamp: 777}, nil, nil)
 
-	if len(sink.timestamps) != 1 || sink.timestamps[0] != 777 {
-		t.Fatalf("got %v, want [777] (unchanged)", sink.timestamps)
-	}
+	assert.Equal(t, []uint32{777}, sink.timestamps)
 }
