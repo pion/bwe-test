@@ -17,6 +17,7 @@ import (
 	"github.com/pion/mediadevices/pkg/codec"
 	"github.com/pion/mediadevices/pkg/io/video"
 	"github.com/pion/mediadevices/pkg/prop"
+	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -722,6 +723,85 @@ func TestRTCSender_GetTrackStats_QualityLimitation(t *testing.T) {
 			"cpu-limited seconds should accumulate on buffer eviction")
 		assert.Zero(t, got.QualityLimitationBandwidthSeconds)
 	})
+}
+
+func TestRTCSender_LookupNetStatsBySSRC_NilGetter(t *testing.T) {
+	// Before SetupPeerConnection, statsGetter is unset. The lookup must return
+	// nil cleanly rather than panic — callers (e.g. consumers polling each
+	// tick) shouldn't have to guard against pre-bind state themselves.
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	assert.Nil(t, sender.LookupNetStatsBySSRC(webrtc.SSRC(12345)))
+}
+
+func TestRTCSender_LookupNetStatsBySSRC_MissingSSRC(t *testing.T) {
+	// With a getter installed but returning nil for the requested SSRC (no
+	// traffic observed yet for that sender), the lookup must return nil.
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	sender.statsGetterMu.Lock()
+	sender.statsGetter = &mockStatsGetter{stats: nil}
+	sender.statsGetterMu.Unlock()
+
+	assert.Nil(t, sender.LookupNetStatsBySSRC(webrtc.SSRC(12345)))
+}
+
+func TestRTCSender_LookupNetStatsBySSRC_PopulatesFields(t *testing.T) {
+	// With a getter returning canned stats, every outbound and remote-inbound
+	// field flows through to the SenderNetStats result. Mirrors the
+	// equivalent TrackStats coverage so behavior between the two entry points
+	// stays in lockstep.
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	sender.statsGetterMu.Lock()
+	sender.statsGetter = &mockStatsGetter{
+		stats: &stats.Stats{
+			OutboundRTPStreamStats: stats.OutboundRTPStreamStats{
+				SentRTPStreamStats: stats.SentRTPStreamStats{
+					PacketsSent: 4321,
+					BytesSent:   210987,
+				},
+				HeaderBytesSent: 3500,
+				NACKCount:       7,
+				PLICount:        3,
+			},
+			RemoteInboundRTPStreamStats: stats.RemoteInboundRTPStreamStats{
+				ReceivedRTPStreamStats: stats.ReceivedRTPStreamStats{
+					PacketsReceived: 4200,
+					PacketsLost:     21,
+					Jitter:          0.125,
+				},
+				FractionLost:              0.005,
+				RoundTripTime:             20 * time.Millisecond,
+				TotalRoundTripTime:        2 * time.Second,
+				RoundTripTimeMeasurements: 50,
+			},
+		},
+	}
+	sender.statsGetterMu.Unlock()
+
+	got := sender.LookupNetStatsBySSRC(webrtc.SSRC(987654))
+	require.NotNil(t, got)
+
+	assert.Equal(t, uint64(4321), got.PacketsSent)
+	assert.Equal(t, uint64(210987), got.BytesSent)
+	assert.Equal(t, uint64(3500), got.HeaderBytesSent)
+	assert.Equal(t, uint32(7), got.NACKCount)
+	assert.Equal(t, uint32(3), got.PLICount)
+
+	assert.Equal(t, uint64(4200), got.PacketsReceived)
+	assert.Equal(t, int64(21), got.PacketsLost)
+	assert.InDelta(t, 0.125, got.Jitter, 0.0001)
+	assert.InDelta(t, 0.005, got.FractionLost, 0.0001)
+	assert.Equal(t, 20*time.Millisecond, got.RoundTripTime)
+	assert.Equal(t, 2*time.Second, got.TotalRoundTripTime)
+	assert.Equal(t, uint64(50), got.RoundTripTimeMeasurements)
 }
 
 func TestTrackStats_ZeroValueIsValid(t *testing.T) {
