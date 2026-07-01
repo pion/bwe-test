@@ -77,6 +77,11 @@ type EncodedTrack struct {
 	// resolving network stats from the Pion stats interceptor.
 	rtpSender *webrtc.RTPSender
 
+	// ssrc caches the primary SSRC resolved from rtpSender. It is resolved
+	// lazily (0 until available) so the per-frame encode path can stamp
+	// capture times without calling RTPSender.GetParameters every frame.
+	ssrc atomic.Uint32
+
 	// Per-frame timing counters used by GetTrackStats. Updated atomically by
 	// the encode goroutine in encodeAndSendTrack.
 	framesEncoded        atomic.Uint64
@@ -247,16 +252,23 @@ func NewRTCSender(opts ...Option) (*RTCSender, error) {
 
 // setupGCC sets up Google Congestion Control with the specified initial and max bitrate.
 // A maxBitrate of 0 means no cap (uses GCC default of 50 Mbps).
-func (s *RTCSender) setupGCC(initialBitrate, maxBitrate int) error {
-	s.maxBitrate = maxBitrate
-	controller, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
+// newGCCFactory builds the send-side BWE estimator factory for the cc
+// interceptor, applying the initial bitrate and an optional max cap (0 = no
+// cap). Shared by setupGCC and the GCC option's fallback path.
+func newGCCFactory(initialBitrate, maxBitrate int) func() (cc.BandwidthEstimator, error) {
+	return func() (cc.BandwidthEstimator, error) {
 		opts := []gcc.Option{gcc.SendSideBWEInitialBitrate(initialBitrate)}
 		if maxBitrate > 0 {
 			opts = append(opts, gcc.SendSideBWEMaxBitrate(maxBitrate))
 		}
 
 		return gcc.NewSendSideBWE(opts...)
-	})
+	}
+}
+
+func (s *RTCSender) setupGCC(initialBitrate, maxBitrate int) error {
+	s.maxBitrate = maxBitrate
+	controller, err := cc.NewInterceptor(newGCCFactory(initialBitrate, maxBitrate))
 	if err != nil {
 		return err
 	}
@@ -330,15 +342,31 @@ func rtpSenderSSRC(sender *webrtc.RTPSender) (uint32, bool) {
 	return ssrc, true
 }
 
+// resolveSSRC returns the track's primary SSRC, caching it on first success so
+// repeated callers (the per-frame encode path and GetTrackStats) avoid the
+// allocations RTPSender.GetParameters makes on every call. The SSRC is fixed
+// once the sender is bound, so caching is safe.
+func (t *EncodedTrack) resolveSSRC() (uint32, bool) {
+	if ssrc := t.ssrc.Load(); ssrc != 0 {
+		return ssrc, true
+	}
+	ssrc, ok := rtpSenderSSRC(t.rtpSender)
+	if ok {
+		t.ssrc.Store(ssrc)
+	}
+
+	return ssrc, ok
+}
+
 // stampCaptureTime records a frame's capture timestamp (unix microseconds) on
 // the capture-timestamp interceptor, keyed by the track's SSRC, so the next
 // WriteSample encodes it into the outgoing RTP timestamp. A no-op when the
 // interceptor is absent or the SSRC is not yet resolvable.
-func (s *RTCSender) stampCaptureTime(rtpSender *webrtc.RTPSender, captureTSUs int64) {
+func (s *RTCSender) stampCaptureTime(track *EncodedTrack, captureTSUs int64) {
 	if s.captureTimestamp == nil {
 		return
 	}
-	if ssrc, ok := rtpSenderSSRC(rtpSender); ok {
+	if ssrc, ok := track.resolveSSRC(); ok {
 		s.captureTimestamp.SetCaptureTSUs(ssrc, captureTSUs)
 	}
 }
@@ -423,16 +451,11 @@ func (s *RTCSender) GetTrackStats(trackID string) *TrackStats {
 	s.statsGetterMu.RLock()
 	getter := s.statsGetter
 	s.statsGetterMu.RUnlock()
-	if getter == nil || track.rtpSender == nil {
+	if getter == nil {
 		return out
 	}
-
-	params := track.rtpSender.GetParameters()
-	if len(params.Encodings) == 0 {
-		return out
-	}
-	ssrc := uint32(params.Encodings[0].SSRC)
-	if ssrc == 0 {
+	ssrc, ok := track.resolveSSRC()
+	if !ok {
 		return out
 	}
 
@@ -972,7 +995,6 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	s.tracksMu.RLock()
 	videoTrack := track.videoTrack
 	videoSource := track.videoSource
-	rtpSender := track.rtpSender
 	onEncodedFrame := s.onEncodedFrame
 	onFrameSent := s.onFrameSent
 	s.tracksMu.RUnlock()
@@ -1005,7 +1027,7 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	// WriteSample → packetize → interceptor runs synchronously in this
 	// goroutine, and the value is keyed by SSRC, so it is correct for the
 	// packets WriteSample produces even with concurrent tracks.
-	s.stampCaptureTime(rtpSender, captureTSUs)
+	s.stampCaptureTime(track, captureTSUs)
 
 	writeErr := videoTrack.WriteSample(media.Sample{
 		Data:     encoded.Data,

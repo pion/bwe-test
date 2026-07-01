@@ -13,7 +13,6 @@ import (
 	"github.com/pion/bwe-test/logging"
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
-	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/interceptor/pkg/packetdump"
 	plogging "github.com/pion/logging"
 	"github.com/pion/transport/v4/vnet"
@@ -86,14 +85,7 @@ func GCC(initialBitrate, maxBitrate int) Option {
 			return rtcSender.setupGCC(initialBitrate, maxBitrate)
 		}
 		// Fallback for other ConfigurableWebRTCSender types.
-		controller, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
-			opts := []gcc.Option{gcc.SendSideBWEInitialBitrate(initialBitrate)}
-			if maxBitrate > 0 {
-				opts = append(opts, gcc.SendSideBWEMaxBitrate(maxBitrate))
-			}
-
-			return gcc.NewSendSideBWE(opts...)
-		})
+		controller, err := cc.NewInterceptor(newGCCFactory(initialBitrate, maxBitrate))
 		if err != nil {
 			return err
 		}
