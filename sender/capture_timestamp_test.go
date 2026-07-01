@@ -63,3 +63,22 @@ func TestCaptureTimestampInterceptor_PassthroughWhenUnset(t *testing.T) {
 
 	assert.Equal(t, []uint32{777}, sink.timestamps)
 }
+
+// TestCaptureTimestampInterceptor_RemoveSSRC asserts RemoveSSRC drops the stale
+// slot so it does not accumulate across reconnects, and that a fresh slot is
+// created (starting empty) on the next lookup for the same SSRC.
+func TestCaptureTimestampInterceptor_RemoveSSRC(t *testing.T) {
+	it := newCaptureTimestampInterceptor()
+
+	it.SetCaptureTSUs(testCaptureSSRC, 1_751_000_000_000_000)
+	assert.Len(t, it.slots, 1)
+
+	it.RemoveSSRC(testCaptureSSRC)
+	assert.Empty(t, it.slots)
+
+	// A subsequent lookup re-creates the slot, starting from a cleared state.
+	assert.Zero(t, it.slot(testCaptureSSRC).Load())
+	// Removing an unknown SSRC is a no-op.
+	it.RemoveSSRC(0xDEAD)
+	assert.Len(t, it.slots, 1)
+}

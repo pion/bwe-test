@@ -56,6 +56,17 @@ func (it *captureTimestampInterceptor) SetCaptureTSUs(ssrc uint32, captureTSUs i
 	it.slot(ssrc).Store(captureTSUs)
 }
 
+// RemoveSSRC drops the capture-time slot for an SSRC. Called when a track's
+// sender is replaced on reconnect so stale entries don't accumulate. A live
+// BindLocalStream writer still holds its own *atomic.Int64 reference, so this
+// only affects future SetCaptureTSUs/slot lookups for the removed SSRC.
+func (it *captureTimestampInterceptor) RemoveSSRC(ssrc uint32) {
+	it.mu.Lock()
+	defer it.mu.Unlock()
+
+	delete(it.slots, ssrc)
+}
+
 // BindLocalStream returns a writer that overwrites each frame's RTP timestamp
 // with the capture time expressed in 90 kHz ticks. Frames with no capture time
 // keep their original packetizer timestamp.

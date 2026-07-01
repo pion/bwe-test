@@ -356,6 +356,16 @@ func (t *EncodedTrack) resolveSSRC() (uint32, bool) {
 	return ssrc, ok
 }
 
+// invalidateSSRCCache clears a track's cached SSRC so resolveSSRC re-resolves
+// against a freshly bound RTPSender (e.g. after a reconnect). It also drops the
+// orphaned capture-time slot for the old SSRC so the interceptor map stays
+// bounded across reconnects.
+func (s *RTCSender) invalidateSSRCCache(track *EncodedTrack) {
+	if oldSSRC := track.ssrc.Swap(0); oldSSRC != 0 && s.captureTimestamp != nil {
+		s.captureTimestamp.RemoveSSRC(oldSSRC)
+	}
+}
+
 // stampCaptureTime records a frame's capture timestamp (unix microseconds) on
 // the capture-timestamp interceptor, keyed by the track's SSRC, so the next
 // WriteSample encodes it into the outgoing RTP timestamp. A no-op when the
@@ -727,6 +737,11 @@ func (s *RTCSender) SetupPeerConnection() error {
 
 			return err
 		}
+		// SetupPeerConnection is re-entrant (reconnect). AddTrack yields a fresh
+		// RTPSender with a new SSRC, so invalidate the cached SSRC before
+		// swapping the sender — otherwise capture-time encoding and
+		// GetTrackStats keep using the stale pre-reconnect SSRC.
+		s.invalidateSSRCCache(track)
 		track.rtpSender = rtpSender
 
 		// Handle incoming RTCP. Exits on context cancellation or read error.
