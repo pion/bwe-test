@@ -428,6 +428,67 @@ type TrackStats struct {
 	RoundTripTimeMeasurements uint64
 }
 
+// SenderNetStats is the per-SSRC network-side subset of TrackStats: counters
+// the pion stats interceptor records from outbound RTP + remote RTCP, with no
+// pipeline (encoder) fields. Returned by LookupNetStatsBySSRC for senders that
+// were not added through AddVideoTrack (e.g. tracks added directly via
+// pc.AddTrack on the same PeerConnection), where pipeline counters don't
+// apply. Field semantics mirror the same-named fields on TrackStats.
+type SenderNetStats struct {
+	PacketsSent     uint64
+	BytesSent       uint64
+	HeaderBytesSent uint64
+	NACKCount       uint32
+	PLICount        uint32
+
+	PacketsReceived           uint64
+	PacketsLost               int64
+	Jitter                    float64
+	FractionLost              float64
+	RoundTripTime             time.Duration
+	TotalRoundTripTime        time.Duration
+	RoundTripTimeMeasurements uint64
+}
+
+// LookupNetStatsBySSRC returns the pion stats interceptor's network counters
+// for any sender on the underlying PeerConnection, identified by its outbound
+// SSRC. Use this for tracks added directly to the PC (e.g. via pc.AddTrack)
+// rather than through AddVideoTrack — AddVideoTrack-managed tracks should
+// keep using GetTrackStats, which also surfaces pipeline (encoder) counters.
+//
+// Returns nil when the stats interceptor has not yet bound to a
+// PeerConnection or has no entry for the SSRC (the latter being normal until
+// the first RTP packet has been sent for that sender). RTT-bearing fields
+// stay zero until at least one RTCP receiver report has arrived for the SSRC,
+// matching GetTrackStats' contract.
+func (s *RTCSender) LookupNetStatsBySSRC(ssrc webrtc.SSRC) *SenderNetStats {
+	s.statsGetterMu.RLock()
+	getter := s.statsGetter
+	s.statsGetterMu.RUnlock()
+	if getter == nil {
+		return nil
+	}
+	netStats := getter.Get(uint32(ssrc))
+	if netStats == nil {
+		return nil
+	}
+
+	return &SenderNetStats{
+		PacketsSent:               netStats.OutboundRTPStreamStats.PacketsSent,
+		BytesSent:                 netStats.OutboundRTPStreamStats.BytesSent,
+		HeaderBytesSent:           netStats.OutboundRTPStreamStats.HeaderBytesSent,
+		NACKCount:                 netStats.OutboundRTPStreamStats.NACKCount,
+		PLICount:                  netStats.OutboundRTPStreamStats.PLICount,
+		PacketsReceived:           netStats.RemoteInboundRTPStreamStats.PacketsReceived,
+		PacketsLost:               netStats.RemoteInboundRTPStreamStats.PacketsLost,
+		Jitter:                    netStats.RemoteInboundRTPStreamStats.Jitter,
+		FractionLost:              netStats.RemoteInboundRTPStreamStats.FractionLost,
+		RoundTripTime:             netStats.RemoteInboundRTPStreamStats.RoundTripTime,
+		TotalRoundTripTime:        netStats.RemoteInboundRTPStreamStats.TotalRoundTripTime,
+		RoundTripTimeMeasurements: netStats.RemoteInboundRTPStreamStats.RoundTripTimeMeasurements,
+	}
+}
+
 // GetTrackStats returns the latest cumulative TrackStats for the given video
 // track. Returns nil when the track does not exist. Network fields are zero
 // until the stats interceptor has observed traffic for the track's SSRC and
