@@ -23,6 +23,7 @@ import (
 	"github.com/pion/logging"
 	"github.com/pion/mediadevices"
 	"github.com/pion/mediadevices/pkg/codec"
+	"github.com/pion/mediadevices/pkg/codec/opus"
 	"github.com/pion/mediadevices/pkg/codec/vpx"
 	"github.com/pion/webrtc/v4"
 	"github.com/pion/webrtc/v4/pkg/media"
@@ -41,8 +42,20 @@ var (
 	ErrInvalidNegativeValue        = errors.New("invalid value: must be non-negative")
 	ErrAllocationSumMustBePositive = errors.New("sum of allocation values must be greater than 0")
 	ErrFailedToCastVideoTrack      = errors.New("failed to cast media track to VideoTrack")
+	ErrFailedToCastAudioTrack      = errors.New("failed to cast media track to AudioTrack")
 	ErrMissingEncoderConfig        = errors.New("either EncoderBuilder or InitialBitrate must be provided")
 	ErrForceKeyFrameNotSupported   = errors.New("encoder does not support ForceKeyFrame")
+	ErrInvalidPCMChunk             = errors.New("invalid PCM chunk: length must be a positive multiple of channel count")
+)
+
+// Audio bitrate clamp (bps) for GCC-driven Opus. The GCC allocation for the
+// audio track is clamped into this band before being applied to the encoder.
+const (
+	kAudioMinBps = 8000
+	kAudioMaxBps = 32000
+	// kAudioBandwidthShare is the fraction of the GCC estimate reserved for the
+	// GCC-managed Opus audio track, before clamping to [kAudioMinBps, kAudioMaxBps].
+	kAudioBandwidthShare = 0.05
 )
 
 // VideoTrackInfo holds information about a video track.
@@ -54,7 +67,11 @@ type VideoTrackInfo struct {
 	InitialBitrate int // Optional: if EncoderBuilder is nil, a default VP8 encoder with this bitrate will be created
 }
 
-// EncodedTrack represents an encoded video track.
+// EncodedTrack represents a GCC-managed encoded track (video or audio).
+// videoTrack is the shared local track written via WriteSample for both kinds;
+// encodedReader, bitrateTracker and mimeType are shared too. The video-only
+// fields (info, mediaTrack, encoderBuilder, videoSource) are nil/zero for
+// audio, and the audio-only fields (audioTrack, audioSource) are nil for video.
 type EncodedTrack struct {
 	info           VideoTrackInfo
 	videoTrack     *webrtc.TrackLocalStaticSample
@@ -109,6 +126,19 @@ type EncodedTrack struct {
 
 	encodeCancel context.CancelFunc
 	encodeDone   chan struct{}
+
+	// Audio (encoded Opus) fields. isAudio selects the audio path; audioTrack
+	// and audioSource are nil for video (as info/mediaTrack/encoderBuilder/
+	// videoSource are nil/zero for audio).
+	isAudio     bool
+	audioTrack  *mediadevices.AudioTrack
+	audioSource *AudioBuffer
+
+	// captureSrc / signaler abstract the per-kind frame source so the encode
+	// loop is media-agnostic: both *FrameBuffer (video) and *AudioBuffer
+	// (audio) implement them. Set once at track construction.
+	captureSrc captureTimeSource
+	signaler   frameSignaler
 }
 
 // EncodedFrameCallback is called after each VP8 frame is encoded with the
@@ -473,7 +503,17 @@ func (s *RTCSender) LookupNetStatsBySSRC(ssrc webrtc.SSRC) *SenderNetStats {
 		return nil
 	}
 
-	return &SenderNetStats{
+	ns := netStatsFrom(netStats)
+
+	return &ns
+}
+
+// netStatsFrom copies the pion stats interceptor's network counters into a
+// SenderNetStats. It is the single place that knows the mapping from the
+// interceptor's OutboundRTPStreamStats / RemoteInboundRTPStreamStats fields to
+// our exported field names, shared by LookupNetStatsBySSRC and GetTrackStats.
+func netStatsFrom(netStats *stats.Stats) SenderNetStats {
+	return SenderNetStats{
 		PacketsSent:               netStats.OutboundRTPStreamStats.PacketsSent,
 		BytesSent:                 netStats.OutboundRTPStreamStats.BytesSent,
 		HeaderBytesSent:           netStats.OutboundRTPStreamStats.HeaderBytesSent,
@@ -531,20 +571,21 @@ func (s *RTCSender) GetTrackStats(trackID string) *TrackStats {
 		return out
 	}
 
-	out.PacketsSent = netStats.OutboundRTPStreamStats.PacketsSent
-	out.BytesSent = netStats.OutboundRTPStreamStats.BytesSent
-	out.HeaderBytesSent = netStats.OutboundRTPStreamStats.HeaderBytesSent
-	out.NACKCount = netStats.OutboundRTPStreamStats.NACKCount
-	out.PLICount = netStats.OutboundRTPStreamStats.PLICount
-	out.FIRCount = netStats.OutboundRTPStreamStats.FIRCount
+	ns := netStatsFrom(netStats)
+	out.PacketsSent = ns.PacketsSent
+	out.BytesSent = ns.BytesSent
+	out.HeaderBytesSent = ns.HeaderBytesSent
+	out.NACKCount = ns.NACKCount
+	out.PLICount = ns.PLICount
+	out.FIRCount = netStats.OutboundRTPStreamStats.FIRCount // video-only, not in SenderNetStats
 
-	out.PacketsReceived = netStats.RemoteInboundRTPStreamStats.PacketsReceived
-	out.PacketsLost = netStats.RemoteInboundRTPStreamStats.PacketsLost
-	out.Jitter = netStats.RemoteInboundRTPStreamStats.Jitter
-	out.FractionLost = netStats.RemoteInboundRTPStreamStats.FractionLost
-	out.RoundTripTime = netStats.RemoteInboundRTPStreamStats.RoundTripTime
-	out.TotalRoundTripTime = netStats.RemoteInboundRTPStreamStats.TotalRoundTripTime
-	out.RoundTripTimeMeasurements = netStats.RemoteInboundRTPStreamStats.RoundTripTimeMeasurements
+	out.PacketsReceived = ns.PacketsReceived
+	out.PacketsLost = ns.PacketsLost
+	out.Jitter = ns.Jitter
+	out.FractionLost = ns.FractionLost
+	out.RoundTripTime = ns.RoundTripTime
+	out.TotalRoundTripTime = ns.TotalRoundTripTime
+	out.RoundTripTimeMeasurements = ns.RoundTripTimeMeasurements
 
 	return out
 }
@@ -642,6 +683,8 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 		bitrateTracker: codec.NewBitrateTracker(300 * time.Millisecond),
 		mimeType:       mimeType,
 		encodeDone:     make(chan struct{}),
+		captureSrc:     frameSource,
+		signaler:       frameSource,
 	}
 	track.lastEncodeAtWallUs.Store(time.Now().UnixMicro())
 	s.tracks[info.TrackID] = track
@@ -649,21 +692,30 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 	// Mark the frame buffer as initialized after successful track creation
 	frameSource.SetInitialized()
 
-	// Add track to peer connection if it exists
+	// Add to the peer connection (if any) and start the encode loop.
+	return s.startTrackEncode(info.TrackID, track)
+}
+
+// startTrackEncode adds the track to the peer connection (if one exists), drains
+// its incoming RTCP, and launches the per-track encode loop. It must be called
+// with tracksMu held and always releases the lock before returning. On AddTrack
+// failure it removes the track from the map, closes its media, and returns the
+// error. Shared by AddVideoTrack and AddEncodedAudioTrack.
+func (s *RTCSender) startTrackEncode(trackID string, track *EncodedTrack) error {
 	if s.peerConnection != nil {
-		rtpSender, err := s.peerConnection.AddTrack(videoTrack)
+		// videoTrack is the shared local track for both audio and video.
+		rtpSender, err := s.peerConnection.AddTrack(track.videoTrack)
 		if err != nil {
-			delete(s.tracks, info.TrackID)
-			_ = track.videoSource.Close()
-			_ = track.encodedReader.Close()
-			_ = track.mediaTrack.Close()
+			delete(s.tracks, trackID)
+			_ = track.closeSource()
+			track.closeMedia()
 			s.tracksMu.Unlock()
 
 			return err
 		}
 		track.rtpSender = rtpSender
 
-		// Handle incoming RTCP
+		// Handle incoming RTCP.
 		go func() {
 			rtcpBuf := make([]byte, 1500)
 			for {
@@ -678,9 +730,29 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 	trackCtx, trackCancel := context.WithCancel(context.Background())
 	track.encodeCancel = trackCancel
 	s.tracksMu.Unlock()
-	go s.runEncodeLoop(trackCtx, info.TrackID, track)
+	go s.runEncodeLoop(trackCtx, trackID, track)
 
 	return nil
+}
+
+// closeSource closes the track's frame/PCM source (video FrameBuffer or audio
+// AudioBuffer), whichever field is populated.
+func (t *EncodedTrack) closeSource() error {
+	if t.isAudio {
+		return t.audioSource.Close()
+	}
+
+	return t.videoSource.Close()
+}
+
+// closeMedia closes the encoded reader and the underlying mediadevices track.
+func (t *EncodedTrack) closeMedia() {
+	_ = t.encodedReader.Close()
+	if t.isAudio {
+		_ = t.audioTrack.Close()
+	} else {
+		_ = t.mediaTrack.Close()
+	}
 }
 
 // AddAudioTrack adds a pre-encoded audio track (Opus).
@@ -724,6 +796,104 @@ func (s *RTCSender) AddAudioTrack(trackID string) (*webrtc.TrackLocalStaticSampl
 	return audioTrack, nil
 }
 
+// AddEncodedAudioTrack adds a GCC-managed encoded audio track. Unlike
+// AddAudioTrack (which expects pre-encoded Opus via WriteSample), this track
+// owns the Opus encoder: callers push raw PCM via SendAudioFrame and the GCC
+// control loop drives its bitrate alongside video, sharing the bitrate pool.
+// It is driven by the same per-track runEncodeLoop goroutine as video.
+func (s *RTCSender) AddEncodedAudioTrack(trackID string, params opus.Params) error {
+	s.tracksMu.Lock()
+
+	if _, exists := s.tracks[trackID]; exists {
+		s.tracksMu.Unlock()
+
+		return fmt.Errorf("%w: %s", ErrTrackAlreadyExists, trackID)
+	}
+	if _, exists := s.audioTracks[trackID]; exists {
+		s.tracksMu.Unlock()
+
+		return fmt.Errorf("%w: %s", ErrTrackAlreadyExists, trackID)
+	}
+
+	if !params.Latency.Validate() {
+		params.Latency = opus.Latency20ms
+	}
+
+	// Create codec selector with the Opus encoder builder.
+	codecSelector := mediadevices.NewCodecSelector(
+		mediadevices.WithAudioEncoders(&params),
+	)
+
+	// Create the PCM source. 48kHz stereo matches the Opus RTPCodec caps below.
+	audioSource := NewAudioBuffer(48000, 2)
+
+	// Create media track with encoder.
+	mediaTrack := mediadevices.NewAudioTrack(audioSource, codecSelector)
+
+	audioMediaTrack, ok := mediaTrack.(*mediadevices.AudioTrack)
+	if !ok {
+		s.tracksMu.Unlock()
+		_ = mediaTrack.Close()
+
+		return ErrFailedToCastAudioTrack
+	}
+
+	// Create encoded reader. This reads one chunk for property detection — the
+	// AudioBuffer (uninitialized) supplies a silence chunk for that.
+	encodedReader, err := audioMediaTrack.NewEncodedReader(webrtc.MimeTypeOpus)
+	if err != nil {
+		s.tracksMu.Unlock()
+		_ = mediaTrack.Close()
+
+		return err
+	}
+
+	// Create WebRTC track. Per RFC 7587 §7, Opus is advertised with 2 channels.
+	localTrack, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{
+			MimeType:    webrtc.MimeTypeOpus,
+			ClockRate:   48000,
+			Channels:    2,
+			SDPFmtpLine: "minptime=10;useinbandfec=1",
+		},
+		trackID,
+		trackID,
+	)
+	if err != nil {
+		s.tracksMu.Unlock()
+		_ = encodedReader.Close()
+		_ = mediaTrack.Close()
+
+		return err
+	}
+
+	track := &EncodedTrack{
+		info:           VideoTrackInfo{TrackID: trackID},
+		videoTrack:     localTrack,
+		encodedReader:  encodedReader,
+		bitrateTracker: codec.NewBitrateTracker(300 * time.Millisecond),
+		mimeType:       webrtc.MimeTypeOpus,
+		isAudio:        true,
+		audioTrack:     audioMediaTrack,
+		audioSource:    audioSource,
+		encodeDone:     make(chan struct{}),
+		captureSrc:     audioSource,
+		signaler:       audioSource,
+	}
+	track.lastEncodeAtWallUs.Store(time.Now().UnixMicro())
+	s.tracks[trackID] = track
+
+	// Mark the audio buffer as initialized after successful track creation, so
+	// subsequent Read()s are non-blocking (matches FrameBuffer/AddVideoTrack).
+	audioSource.SetInitialized()
+
+	s.log.Infof("Added encoded audio track: %s", trackID)
+
+	// Add to the peer connection (if any) and start the encode loop, mirroring
+	// AddVideoTrack.
+	return s.startTrackEncode(trackID, track)
+}
+
 // SendFrame sends a frame to a specific track with no associated capture
 // timestamp. Equivalent to SendFrameWithCaptureTS(trackID, frame, 0).
 func (s *RTCSender) SendFrame(trackID string, frame image.Image) error {
@@ -765,6 +935,36 @@ func (s *RTCSender) SendFrameWithCaptureTS(trackID string, frame image.Image, ca
 	}
 
 	return err
+}
+
+// SendAudioFrame pushes raw interleaved PCM to an encoded audio track with no
+// associated capture timestamp. Equivalent to
+// SendAudioFrameWithCaptureTS(trackID, pcm, sampleRate, channels, 0).
+func (s *RTCSender) SendAudioFrame(trackID string, pcm []int16, sampleRate, channels int) error {
+	return s.SendAudioFrameWithCaptureTS(trackID, pcm, sampleRate, channels, 0)
+}
+
+// SendAudioFrameWithCaptureTS pushes raw interleaved PCM to an encoded audio
+// track created via AddEncodedAudioTrack, along with an opaque capture
+// timestamp (unix microseconds; 0 = none) that is encoded into the outgoing RTP
+// timestamp. samples is interleaved 16-bit PCM; sampleRate and channels describe
+// its format (expected 48000 / 1-2 to match the Opus track).
+func (s *RTCSender) SendAudioFrameWithCaptureTS(
+	trackID string, pcm []int16, sampleRate, channels int, captureTSUs int64,
+) error {
+	s.tracksMu.RLock()
+	track, exists := s.tracks[trackID]
+	s.tracksMu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("%w: %s", ErrTrackNotFound, trackID)
+	}
+
+	if !track.isAudio || track.audioSource == nil {
+		return fmt.Errorf("%w: %s", ErrTrackDoesNotSupportFrames, trackID)
+	}
+
+	return track.audioSource.PushPCMWithCaptureTS(pcm, sampleRate, channels, captureTSUs)
 }
 
 // SetupPeerConnection initializes the WebRTC peer connection.
@@ -899,8 +1099,31 @@ func (s *RTCSender) calculateTrackBitrate(trackID string, targetBitrate, equalSh
 	return int(float64(targetBitrate) * percentage)
 }
 
+// audioTargetBitrate returns the bitrate to apply to a GCC-managed Opus audio
+// track for a given GCC estimate: kAudioBandwidthShare of the estimate, clamped
+// to [kAudioMinBps, kAudioMaxBps].
+func audioTargetBitrate(estimate int) int {
+	share := int(kAudioBandwidthShare * float64(estimate))
+
+	return max(kAudioMinBps, min(kAudioMaxBps, share))
+}
+
 // updateEncoderBitrate updates the encoder controller for a track.
 func updateEncoderBitrate(track *EncodedTrack, currentBitrate, targetBitrate int) bool {
+	// Audio (Opus) encoders implement codec.BitRateController (SetBitRate(int)),
+	// a different interface from the video QPController path below.
+	if track.isAudio {
+		controller, ok := track.encodedReader.Controller().(codec.BitRateController)
+		if !ok || controller == nil {
+			return false
+		}
+
+		clamped := max(kAudioMinBps, min(kAudioMaxBps, targetBitrate))
+		_ = controller.SetBitRate(clamped)
+
+		return true
+	}
+
 	// Try QPController first (standard pion mediadevices)
 	if qpController, ok := track.encodedReader.Controller().(codec.QPController); ok && qpController != nil {
 		_ = qpController.DynamicQPControl(currentBitrate, targetBitrate)
@@ -925,6 +1148,39 @@ func updateEncoderBitrate(track *EncodedTrack, currentBitrate, targetBitrate int
 	return false
 }
 
+// UpdateBitrate applies a GCC target bitrate to the encoders this RTCSender
+// manages. Start() calls the internal updateBitrate on its own 100ms tick; this
+// exported entry point lets callers that own the estimator elsewhere (e.g. a
+// hardware-encode deployment where Start() is not run) still drive the
+// software-encoded tracks — notably the GCC-managed Opus audio track.
+func (s *RTCSender) UpdateBitrate(targetBitrate int) {
+	s.updateBitrate(targetBitrate)
+}
+
+// videoPoolAndEqualShare reserves each audio track's clamped share of the GCC
+// estimate up front so video is allocated from the remaining pool — audio shares
+// the estimate rather than riding additively on top of it. It returns the pool
+// left for video and the per-video-track equal share. Callers must hold
+// tracksMu (read lock is sufficient).
+func (s *RTCSender) videoPoolAndEqualShare(targetBitrate int) (videoPool, equalShare int) {
+	reservedAudio, numVideo := 0, 0
+	for _, track := range s.tracks {
+		if track.isAudio {
+			reservedAudio += audioTargetBitrate(targetBitrate)
+		} else {
+			numVideo++
+		}
+	}
+
+	videoPool = max(0, targetBitrate-reservedAudio)
+	equalShare = videoPool
+	if numVideo > 0 {
+		equalShare = videoPool / numVideo
+	}
+
+	return videoPool, equalShare
+}
+
 // updateBitrate updates bitrate for all tracks.
 func (s *RTCSender) updateBitrate(targetBitrate int) {
 	s.tracksMu.RLock()
@@ -935,11 +1191,27 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 	}
 
 	useCustomAllocation := len(s.bitrateAllocation) > 0
-	equalShare := targetBitrate / len(s.tracks)
+	videoPool, equalShare := s.videoPoolAndEqualShare(targetBitrate)
 	nowUs := time.Now().UnixMicro()
 
 	for trackID, track := range s.tracks {
-		trackBitrate := s.calculateTrackBitrate(trackID, targetBitrate, equalShare, useCustomAllocation)
+		// Audio is GCC-driven independent of the video bitrate allocation: it
+		// takes kAudioBandwidthShare of the estimate, clamped to
+		// [kAudioMinBps, kAudioMaxBps] (see audioTargetBitrate). This keeps audio
+		// adapting even in deployments where the video tracks are hardware-encoded
+		// and this track is the only one the RTCSender manages. currentBitrate is
+		// ignored by the audio path in updateEncoderBitrate, so pass 0.
+		if track.isAudio {
+			audioTarget := audioTargetBitrate(targetBitrate)
+			track.targetBitrate.Store(int64(audioTarget))
+			if !updateEncoderBitrate(track, 0, audioTarget) {
+				s.log.Warnf("No compatible encoder controller for audio track %s", track.info.TrackID)
+			}
+
+			continue
+		}
+
+		trackBitrate := s.calculateTrackBitrate(trackID, videoPool, equalShare, useCustomAllocation)
 		track.targetBitrate.Store(int64(trackBitrate))
 		s.accumulateQualityLimitation(track, nowUs)
 
@@ -999,17 +1271,17 @@ func (s *RTCSender) runEncodeLoop(ctx context.Context, trackID string, track *En
 	defer close(track.encodeDone)
 
 	// The encode loop waits on the buffer's enqueue signal instead of polling
-	// on empty. videoSource is always a *FrameBuffer (set in AddVideoTrack) and
-	// never swapped (recreateEncoder only replaces encodedReader), so these
-	// channels stay valid across encoder recreation.
-	fb, ok := track.videoSource.(*FrameBuffer)
-	if !ok {
-		s.log.Errorf("track %s has no FrameBuffer source; encode loop exiting", trackID)
+	// on empty. The signaler is set once at track construction (*FrameBuffer for
+	// video, *AudioBuffer for audio) and never swapped (recreateEncoder only
+	// replaces encodedReader), so these channels stay valid across encoder
+	// recreation.
+	if track.signaler == nil {
+		s.log.Errorf("track %s has no frame signaler; encode loop exiting", trackID)
 
 		return
 	}
-	frameReady := fb.FrameReady()
-	bufClosed := fb.Closed()
+	frameReady := track.signaler.FrameReady()
+	bufClosed := track.signaler.Closed()
 
 	for {
 		select {
@@ -1061,12 +1333,21 @@ func (s *RTCSender) handleEncodeErr(
 	return false
 }
 
+// sampleDuration is the WriteSample frame duration for a track: Opus frames
+// audio at Latency20ms, video runs at 10fps.
+func sampleDuration(track *EncodedTrack) time.Duration {
+	if track.isAudio {
+		return 20 * time.Millisecond
+	}
+
+	return time.Second / 10
+}
+
 // encodeAndSendTrack reads, encodes, and sends a single track's frame.
 // Returns true if a frame was successfully processed, or an error.
 func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (bool, error) {
 	s.tracksMu.RLock()
 	videoTrack := track.videoTrack
-	videoSource := track.videoSource
 	onEncodedFrame := s.onEncodedFrame
 	onFrameSent := s.onFrameSent
 	s.tracksMu.RUnlock()
@@ -1084,11 +1365,12 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	}
 	tAfterRead := time.Now()
 
-	// Per-frame stamps; non-FrameBuffer sources report 0.
+	// Per-frame stamps; sources without capture-time plumbing report 0. Both
+	// *FrameBuffer (video) and *AudioBuffer (audio) implement captureTimeSource.
 	var captureTSUs, dequeuedAtWallUs int64
-	if cfs, ok := videoSource.(*FrameBuffer); ok {
-		captureTSUs = cfs.LastCaptureTSUs()
-		dequeuedAtWallUs = cfs.LastDequeueWallUs()
+	if track.captureSrc != nil {
+		captureTSUs = track.captureSrc.LastCaptureTSUs()
+		dequeuedAtWallUs = track.captureSrc.LastDequeueWallUs()
 	}
 
 	track.bitrateMu.Lock()
@@ -1103,7 +1385,7 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 
 	writeErr := videoTrack.WriteSample(media.Sample{
 		Data:     encoded.Data,
-		Duration: time.Second / 10,
+		Duration: sampleDuration(track),
 	})
 	if writeErr != nil {
 		s.log.Errorf("Error writing sample for track %s: %v", trackID, writeErr)
@@ -1118,7 +1400,8 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 		track.totalSendQueueTimeNs.Add(uint64(d.Nanoseconds())) //nolint:gosec // G115: bounded > 0 by guard above
 	}
 
-	if onEncodedFrame != nil {
+	// The keyframe sniff is VP8-specific, so skip the callback for audio.
+	if !track.isAudio && onEncodedFrame != nil {
 		isKey := len(encoded.Data) > 0 && (encoded.Data[0]&0x01) == 0
 		onEncodedFrame(trackID, encoded.Data, isKey)
 	}
@@ -1210,6 +1493,13 @@ func (s *RTCSender) recreateEncodersForActivatedTracks(newAllocation map[string]
 // after a track has been idle for a long time.
 // Must be called while holding tracksMu.Lock.
 func (s *RTCSender) recreateEncoder(track *EncodedTrack) error {
+	// Audio (Opus) tracks have no VPX duration workaround and no FrameBuffer/
+	// VideoTrack to recreate, so this is a no-op for them. Return before
+	// touching mediaTrack/videoSource, which are nil for audio.
+	if track.isAudio {
+		return nil
+	}
+
 	// encoderMu.Lock excludes the per-track encode goroutine for the
 	// duration of the swap. Without this, the goroutine can be inside
 	// encodedReader.Read or holding a release() callback while we close
@@ -1249,6 +1539,11 @@ func (s *RTCSender) ForceKeyFrame(trackID string) error {
 		return fmt.Errorf("%w: %s", ErrTrackNotFound, trackID)
 	}
 
+	// Opus has no keyframes.
+	if track.isAudio {
+		return fmt.Errorf("%w: %s", ErrForceKeyFrameNotSupported, trackID)
+	}
+
 	if kfc, ok := track.encodedReader.Controller().(codec.KeyFrameController); ok {
 		return kfc.ForceKeyFrame()
 	}
@@ -1279,7 +1574,7 @@ func (s *RTCSender) Close() error {
 	// Close the source first; this makes the encode goroutine's pending
 	// Read return ErrBufferClosed.
 	for _, track := range tracks {
-		_ = track.videoSource.Close()
+		_ = track.closeSource()
 	}
 	// Wait for the encode goroutine to exit before closing encodedReader /
 	// mediaTrack so Close cannot race a concurrent Read on those.
@@ -1289,8 +1584,7 @@ func (s *RTCSender) Close() error {
 		}
 	}
 	for _, track := range tracks {
-		_ = track.encodedReader.Close()
-		_ = track.mediaTrack.Close()
+		track.closeMedia()
 	}
 
 	s.tracksMu.Lock()

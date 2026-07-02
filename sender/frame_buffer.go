@@ -181,8 +181,7 @@ func (f *FrameBuffer) Read() (image.Image, func(), error) {
 		// Non-blocking fast path for normal operation.
 		select {
 		case fm := <-f.frameChan:
-			f.lastCaptureTSUs.Store(fm.captureTSUs)
-			f.lastDequeueWallUs.Store(time.Now().UnixMicro())
+			f.recordDequeue(fm)
 
 			return fm.img, func() {}, nil
 		default:
@@ -196,8 +195,7 @@ func (f *FrameBuffer) Read() (image.Image, func(), error) {
 
 	select {
 	case fm := <-f.frameChan:
-		f.lastCaptureTSUs.Store(fm.captureTSUs)
-		f.lastDequeueWallUs.Store(time.Now().UnixMicro())
+		f.recordDequeue(fm)
 
 		return fm.img, func() {}, nil
 	case <-f.closeChan:
@@ -207,6 +205,13 @@ func (f *FrameBuffer) Read() (image.Image, func(), error) {
 
 		return blackFrame, func() {}, nil
 	}
+}
+
+// recordDequeue stores the dequeued frame's capture time and the wall-clock
+// dequeue instant for GetTrackStats / capture-timestamp stamping.
+func (f *FrameBuffer) recordDequeue(fm frameWithMeta) {
+	f.lastCaptureTSUs.Store(fm.captureTSUs)
+	f.lastDequeueWallUs.Store(time.Now().UnixMicro())
 }
 
 // LastCaptureTSUs returns the captureTSUs of the most recently popped
