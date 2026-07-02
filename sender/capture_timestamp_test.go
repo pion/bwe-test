@@ -33,6 +33,12 @@ func bindCapture(it *captureTimestampInterceptor, sink interceptor.RTPWriter) in
 	return it.BindLocalStream(&interceptor.StreamInfo{SSRC: testCaptureSSRC}, sink)
 }
 
+func bindCaptureRate(
+	it *captureTimestampInterceptor, sink interceptor.RTPWriter, clockRate uint32,
+) interceptor.RTPWriter {
+	return it.BindLocalStream(&interceptor.StreamInfo{SSRC: testCaptureSSRC, ClockRate: clockRate}, sink)
+}
+
 // TestCaptureTimestampInterceptor_EncodesCaptureTime asserts the RTP timestamp
 // is overwritten with captureUs*9/100 (mod 2^32), constant across a frame.
 func TestCaptureTimestampInterceptor_EncodesCaptureTime(t *testing.T) {
@@ -50,6 +56,39 @@ func TestCaptureTimestampInterceptor_EncodesCaptureTime(t *testing.T) {
 	_, _ = w.Write(&rtp.Header{Timestamp: 42}, nil, nil)
 
 	assert.Equal(t, []uint32{want, want}, sink.timestamps)
+}
+
+// TestCaptureTimestampInterceptor_ClockRate48k asserts an Opus (48 kHz) stream
+// encodes the capture time in 48 kHz ticks (captureUs*48000/1e6 = captureUs*6/125).
+func TestCaptureTimestampInterceptor_ClockRate48k(t *testing.T) {
+	it := newCaptureTimestampInterceptor()
+	sink := &captureCollector{}
+	w := bindCaptureRate(it, sink, 48000)
+
+	captureUs := int64(1_751_000_000_000_000)
+	want := uint32(captureUs * 6 / 125) //nolint:gosec // intentional 32-bit wrap
+	it.SetCaptureTSUs(testCaptureSSRC, captureUs)
+
+	_, _ = w.Write(&rtp.Header{Timestamp: 42}, nil, nil)
+	_, _ = w.Write(&rtp.Header{Timestamp: 42}, nil, nil)
+
+	assert.Equal(t, []uint32{want, want}, sink.timestamps)
+}
+
+// TestCaptureTimestampInterceptor_ClockRateZeroFallsBackTo90k asserts a stream
+// that reports no clock rate keeps the prior 90 kHz video behavior.
+func TestCaptureTimestampInterceptor_ClockRateZeroFallsBackTo90k(t *testing.T) {
+	it := newCaptureTimestampInterceptor()
+	sink := &captureCollector{}
+	w := bindCaptureRate(it, sink, 0)
+
+	captureUs := int64(1_751_000_000_000_000)
+	want := uint32(captureUs * 9 / 100) //nolint:gosec // intentional 32-bit wrap
+	it.SetCaptureTSUs(testCaptureSSRC, captureUs)
+
+	_, _ = w.Write(&rtp.Header{Timestamp: 42}, nil, nil)
+
+	assert.Equal(t, []uint32{want}, sink.timestamps)
 }
 
 // TestCaptureTimestampInterceptor_PassthroughWhenUnset asserts a frame with no

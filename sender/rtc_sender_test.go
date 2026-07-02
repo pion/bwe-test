@@ -15,6 +15,7 @@ import (
 	"github.com/pion/interceptor/pkg/stats"
 	"github.com/pion/mediadevices"
 	"github.com/pion/mediadevices/pkg/codec"
+	"github.com/pion/mediadevices/pkg/codec/opus"
 	"github.com/pion/mediadevices/pkg/io/video"
 	"github.com/pion/mediadevices/pkg/prop"
 	"github.com/pion/webrtc/v4"
@@ -667,6 +668,58 @@ func TestRTCSender_GetTrackStats_BitrateFields(t *testing.T) {
 	assert.Equal(t, estimate, got.AvailableOutgoingBitrate)
 	// Single track, equal share => the whole estimate is allocated to it.
 	assert.Equal(t, estimate, got.TargetBitrate)
+}
+
+func TestAudioTargetBitrate(t *testing.T) {
+	tests := []struct {
+		name     string
+		estimate int
+		want     int
+	}{
+		{"below floor", 100_000, kAudioMinBps},       // 5% = 5000 -> floored to 8000
+		{"at floor boundary", 160_000, kAudioMinBps}, // 5% = 8000
+		{"linear region", 200_000, 10_000},           // 5% = 10000
+		{"linear region high", 400_000, 20_000},      // 5% = 20000
+		{"at cap boundary", 640_000, kAudioMaxBps},   // 5% = 32000
+		{"above cap", 1_000_000, kAudioMaxBps},       // 5% = 50000 -> capped to 32000
+		{"zero estimate", 0, kAudioMinBps},           // floored
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, audioTargetBitrate(tt.estimate))
+		})
+	}
+}
+
+// TestRTCSender_UpdateBitrate_AudioReservation verifies that a GCC-managed audio
+// track takes its clamped 5% share and that the share is reserved from the pool
+// so video gets the remainder (audio shares the estimate, not additive on top).
+func TestRTCSender_UpdateBitrate_AudioReservation(t *testing.T) {
+	sender, err := NewRTCSender()
+	require.NoError(t, err)
+	defer func() { _ = sender.Close() }()
+
+	require.NoError(t, sender.AddVideoTrack(VideoTrackInfo{
+		TrackID: "cam-0", Width: 640, Height: 480, EncoderBuilder: &MockVideoEncoderBuilder{},
+	}))
+	opusParams, err := opus.NewParams()
+	require.NoError(t, err)
+	require.NoError(t, sender.AddEncodedAudioTrack(testAudioTrackID, opusParams))
+
+	const estimate = 1_000_000
+	sender.updateBitrate(estimate)
+
+	wantAudio := audioTargetBitrate(estimate) // 32000 (capped)
+
+	sender.tracksMu.RLock()
+	gotAudio := sender.tracks[testAudioTrackID].targetBitrate.Load()
+	gotVideo := sender.tracks["cam-0"].targetBitrate.Load()
+	sender.tracksMu.RUnlock()
+
+	assert.Equal(t, int64(wantAudio), gotAudio, "audio takes clamped 5% share")
+	// Single video track, equal share => it receives the whole remaining pool.
+	assert.Equal(t, int64(estimate-wantAudio), gotVideo, "audio share is reserved from the video pool")
 }
 
 func TestRTCSender_GetTrackStats_QualityLimitation(t *testing.T) {

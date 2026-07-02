@@ -13,11 +13,12 @@ import (
 	"github.com/pion/rtp"
 )
 
-// captureTimestampInterceptor encodes each video frame's capture time into the
-// outgoing RTP timestamp: capture time in 90 kHz ticks, (captureUs*9/100) mod
-// 2^32. This lets the capture instant survive an SFU that re-forwards RTP
+// captureTimestampInterceptor encodes each frame's capture time into the
+// outgoing RTP timestamp, expressed in the stream's own RTP clock:
+// (captureUs * ClockRate / 1e6) mod 2^32 — 90 kHz ticks for video, 48 kHz for
+// Opus audio. This lets the capture instant survive an SFU that re-forwards RTP
 // timestamps but strips header extensions on egress (e.g. LiveKit); the browser
-// recovers it via receiver.getSynchronizationSources()[].rtpTimestamp * 100/9.
+// recovers it via receiver.getSynchronizationSources()[].rtpTimestamp * 1e6/ClockRate.
 //
 // The capture time is supplied out-of-band, per SSRC, via SetCaptureTSUs
 // immediately before each WriteSample call; because packetization and the
@@ -68,13 +69,28 @@ func (it *captureTimestampInterceptor) RemoveSSRC(ssrc uint32) {
 }
 
 // BindLocalStream returns a writer that overwrites each frame's RTP timestamp
-// with the capture time expressed in 90 kHz ticks. Frames with no capture time
-// keep their original packetizer timestamp.
+// with the capture time expressed in the stream's RTP clock ticks. Frames with
+// no capture time keep their original packetizer timestamp.
 func (it *captureTimestampInterceptor) BindLocalStream(
 	info *interceptor.StreamInfo,
 	writer interceptor.RTPWriter,
 ) interceptor.RTPWriter {
 	slot := it.slot(info.SSRC)
+
+	// RTP ticks are captureUs * ClockRate / 1e6 (90 kHz video, 48 kHz Opus).
+	// Fall back to 90 kHz if the negotiated clock rate is missing so a stream
+	// that reports no rate keeps the prior video behavior instead of scaling to
+	// zero. Captured once per stream — the rate is fixed for the stream's life.
+	clockRate := int64(info.ClockRate)
+	if clockRate == 0 {
+		clockRate = 90000
+	}
+	// Reduce ClockRate/1e6 to lowest terms so captureUs*num stays within int64:
+	// captureUs is unix micros (~1.7e15) and captureUs*ClockRate would overflow.
+	// 90 kHz -> 9/100, 48 kHz -> 6/125. Computed once per stream.
+	tickGCD := gcd(clockRate, 1_000_000)
+	tickNum := clockRate / tickGCD
+	tickDen := int64(1_000_000) / tickGCD
 
 	var (
 		hasLast    bool
@@ -94,9 +110,10 @@ func (it *captureTimestampInterceptor) BindLocalStream(
 				frameValid = false
 
 				if captureUs := slot.Load(); captureUs != 0 {
-					// 90 kHz ticks = captureUs * 90000 / 1e6 = captureUs * 9 / 100.
-					// The uint32 conversion applies the required mod 2^32.
-					frameRTPTS = uint32(captureUs * 9 / 100) //nolint:gosec // intentional 32-bit wrap
+					// RTP ticks = captureUs * ClockRate / 1e6, using the reduced
+					// fraction to avoid int64 overflow. The uint32 conversion
+					// applies the required mod 2^32.
+					frameRTPTS = uint32(captureUs * tickNum / tickDen) //nolint:gosec // intentional 32-bit wrap
 					frameValid = true
 				}
 			}
@@ -121,4 +138,13 @@ type captureTimestampFactory struct {
 
 func (f *captureTimestampFactory) NewInterceptor(string) (interceptor.Interceptor, error) {
 	return f.it, nil
+}
+
+// gcd returns the greatest common divisor of a and b (both assumed positive).
+func gcd(a, b int64) int64 {
+	for b != 0 {
+		a, b = b, a%b
+	}
+
+	return a
 }
