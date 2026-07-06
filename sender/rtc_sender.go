@@ -960,7 +960,7 @@ func (s *RTCSender) SendAudioFrameWithCaptureTS(
 		return fmt.Errorf("%w: %s", ErrTrackNotFound, trackID)
 	}
 
-	if !track.isAudio || track.audioSource == nil {
+	if !track.isAudio {
 		return fmt.Errorf("%w: %s", ErrTrackDoesNotSupportFrames, trackID)
 	}
 
@@ -1099,13 +1099,17 @@ func (s *RTCSender) calculateTrackBitrate(trackID string, targetBitrate, equalSh
 	return int(float64(targetBitrate) * percentage)
 }
 
+// clampAudioBitrate constrains a bitrate to the Opus band
+// [kAudioMinBps, kAudioMaxBps]. It is the single source of truth for the band.
+func clampAudioBitrate(bps int) int {
+	return max(kAudioMinBps, min(kAudioMaxBps, bps))
+}
+
 // audioTargetBitrate returns the bitrate to apply to a GCC-managed Opus audio
 // track for a given GCC estimate: kAudioBandwidthShare of the estimate, clamped
 // to [kAudioMinBps, kAudioMaxBps].
 func audioTargetBitrate(estimate int) int {
-	share := int(kAudioBandwidthShare * float64(estimate))
-
-	return max(kAudioMinBps, min(kAudioMaxBps, share))
+	return clampAudioBitrate(int(kAudioBandwidthShare * float64(estimate)))
 }
 
 // updateEncoderBitrate updates the encoder controller for a track.
@@ -1118,8 +1122,7 @@ func updateEncoderBitrate(track *EncodedTrack, currentBitrate, targetBitrate int
 			return false
 		}
 
-		clamped := max(kAudioMinBps, min(kAudioMaxBps, targetBitrate))
-		_ = controller.SetBitRate(clamped)
+		_ = controller.SetBitRate(clampAudioBitrate(targetBitrate))
 
 		return true
 	}
@@ -1208,6 +1211,8 @@ func (s *RTCSender) updateBitrate(targetBitrate int) {
 				s.log.Warnf("No compatible encoder controller for audio track %s", track.info.TrackID)
 			}
 
+			// Audio intentionally skips the shared quality-limitation accounting
+			// below: qualityLimitationDurations is a video-only WebRTC stat.
 			continue
 		}
 

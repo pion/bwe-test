@@ -282,11 +282,29 @@ func (r *Receiver) createOutputFile(trackIdentifier string) {
 	r.log.Infof("Created output file: %s", cleanFilename)
 }
 
-// handleNonVP8Track handles non-VP8 tracks by simply reading packets.
+// reportGlassToGlassLatency recovers the capture instant the sender encoded into
+// rtpTS (see the sender's captureTimestampInterceptor) using the track's
+// negotiated clock rate (90 kHz VP8, 48 kHz Opus), logs the resulting
+// glass-to-glass latency, and returns it. Shared by the video and audio read
+// loops so both surface the capture timestamp identically.
+func (r *Receiver) reportGlassToGlassLatency(trackID string, rtpTS, clockRate uint32) time.Duration {
+	lat := GlassToGlassLatency(rtpTS, clockRate, time.Now().UnixMicro())
+	r.log.Debugf("glass-to-glass latency: track=%s rtpTS=%d clockRate=%d latency=%v",
+		trackID, rtpTS, clockRate, lat)
+
+	return lat
+}
+
+// handleNonVP8Track reads non-VP8 tracks (in practice, encoded Opus audio) and
+// recovers each packet's capture timestamp from its RTP timestamp, mirroring the
+// VP8 video path in processPackets. The sender stamps the capture instant into
+// the RTP timestamp for audio (48 kHz) exactly as it does for video (90 kHz), so
+// the same recovery applies here using the track's negotiated clock rate.
 func (r *Receiver) handleNonVP8Track(
 	ctx context.Context, trackRemote *webrtc.TrackRemote,
-	rtpReceiver *webrtc.RTPReceiver, _ *trackInfo,
+	rtpReceiver *webrtc.RTPReceiver, trackInfo *trackInfo,
 ) {
+	clockRate := trackRemote.Codec().ClockRate
 	for {
 		select {
 		case <-ctx.Done():
@@ -296,7 +314,7 @@ func (r *Receiver) handleNonVP8Track(
 				continue
 			}
 
-			_, _, err := trackRemote.ReadRTP()
+			packet, _, err := trackRemote.ReadRTP()
 			if errors.Is(err, io.EOF) {
 				r.log.Infof("trackRemote.ReadRTP received EOF")
 
@@ -307,6 +325,8 @@ func (r *Receiver) handleNonVP8Track(
 
 				continue
 			}
+
+			r.reportGlassToGlassLatency(trackInfo.identifier, packet.Timestamp, clockRate)
 		}
 	}
 }
@@ -401,6 +421,8 @@ func (r *Receiver) processPackets(ctx context.Context, trackRemote *webrtc.Track
 
 			bytesReceivedChan <- packet.MarshalSize()
 			stats.rtpPacketsReceived++
+
+			r.reportGlassToGlassLatency(trackInfo.identifier, packet.Timestamp, trackRemote.Codec().ClockRate)
 
 			r.processVP8Packet(packet, trackInfo, frameAssembler, stats)
 		}
