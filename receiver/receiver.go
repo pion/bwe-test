@@ -398,6 +398,7 @@ func (r *Receiver) processPackets(ctx context.Context, trackRemote *webrtc.Track
 	trackInfo *trackInfo, frameAssembler *VP8FrameAssembler,
 	bytesReceivedChan chan int, stats *trackStats,
 ) {
+	clockRate := trackRemote.Codec().ClockRate
 	for {
 		select {
 		case <-ctx.Done():
@@ -422,7 +423,7 @@ func (r *Receiver) processPackets(ctx context.Context, trackRemote *webrtc.Track
 			bytesReceivedChan <- packet.MarshalSize()
 			stats.rtpPacketsReceived++
 
-			r.reportGlassToGlassLatency(trackInfo.identifier, packet.Timestamp, trackRemote.Codec().ClockRate)
+			r.reportGlassToGlassLatency(trackInfo.identifier, packet.Timestamp, clockRate)
 
 			r.processVP8Packet(packet, trackInfo, frameAssembler, stats)
 		}

@@ -35,13 +35,20 @@ func CaptureTimeUsFromRTP(rtpTS uint32, clockRate uint32, nowUnixUs int64) int64
 	// Full (non-wrapped) tick count at nowUnixUs; may exceed 2^32.
 	nowTicks := nowUnixUs * num / den
 
-	// Splice rtpTS into the high bits of nowTicks, then pull back one wrap if the
-	// candidate lands in the future (capture always precedes receipt). A single
-	// correction is enough for any realistic latency: the wrap period is 2^32
-	// ticks (~13.25 h at 90 kHz, ~24.9 h at 48 kHz).
+	// Splice rtpTS into the high bits of nowTicks, then snap to the wrap nearest
+	// nowTicks. Capture is within half a wrap period of receipt for any realistic
+	// latency or cross-machine clock skew (the wrap period is 2^32 ticks, ~13.25 h
+	// at 90 kHz / ~24.9 h at 48 kHz), so a candidate more than 2^31 ticks away is a
+	// wrap artifact. Using a half-period guard band (rather than "pull back
+	// whenever candidate > nowTicks") keeps a sender clock that runs slightly ahead
+	// mapping to a small negative latency instead of collapsing a full 2^32 wrap
+	// (~24.9 h) onto it.
 	candidate := (nowTicks &^ 0xFFFFFFFF) | int64(rtpTS)
-	if candidate > nowTicks {
+	switch {
+	case candidate-nowTicks > 1<<31:
 		candidate -= 1 << 32
+	case nowTicks-candidate > 1<<31:
+		candidate += 1 << 32
 	}
 
 	return candidate * den / num

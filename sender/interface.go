@@ -39,3 +39,12 @@ type frameSignaler interface {
 	FrameReady() <-chan struct{}
 	Closed() <-chan struct{}
 }
+
+// trackBuffer is the union of the capabilities a GCC-managed track's frame
+// buffer provides. Both *FrameBuffer (video) and *AudioBuffer (audio) satisfy
+// it, so the encode loop can wait for and stamp frames without knowing the
+// media type.
+type trackBuffer interface {
+	captureTimeSource
+	frameSignaler
+}
