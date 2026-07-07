@@ -46,8 +46,8 @@ var (
 	ErrMissingEncoderConfig        = errors.New("either EncoderBuilder or InitialBitrate must be provided")
 	ErrForceKeyFrameNotSupported   = errors.New("encoder does not support ForceKeyFrame")
 	ErrInvalidPCMChunk             = errors.New("invalid PCM chunk: length must be a positive multiple of channel count")
-	ErrPCMFormatMismatch           = errors.New("PCM format does not match the track's Opus encoder (sample rate / channel count)")
-	ErrAudioTrackNotAllocatable    = errors.New("audio track bitrate is GCC-managed and cannot be set via SetBitrateAllocation")
+	ErrPCMFormatMismatch           = errors.New("PCM sample rate / channel count does not match the track's encoder")
+	ErrAudioTrackNotAllocatable    = errors.New("audio track bitrate is GCC-managed, not allocatable")
 )
 
 // Audio bitrate clamp (bps) for GCC-driven Opus. The GCC allocation for the
