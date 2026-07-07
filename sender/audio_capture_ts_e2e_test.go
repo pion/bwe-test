@@ -20,7 +20,7 @@ const audioClockRate = uint32(48000)
 
 // audioQuantUs is the round-trip quantization bound (one 48 kHz tick), matching
 // the receiver-side recovery tolerance.
-const audioQuantUs = int64(1_000_000/int64(audioClockRate) + 1)
+const audioQuantUs = 1_000_000/int64(audioClockRate) + 1
 
 // stampAndEmitAudio runs a capture time through the real captureTimestampInterceptor
 // at the Opus (48 kHz) clock and returns the RTP timestamp it wrote on the wire.
