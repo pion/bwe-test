@@ -135,14 +135,20 @@ func (a *AudioBuffer) SetInitialized() {
 // mediadevices can detect the audio properties.
 func (a *AudioBuffer) Read() (wave.Audio, func(), error) {
 	if a.initialized {
+		// Check closeChan first so a closed buffer always reports ErrBufferClosed
+		// instead of racing with the chunkChan/default branch below (Go's select
+		// picks ready cases pseudo-randomly). Mirrors FrameBuffer.Read.
+		select {
+		case <-a.closeChan:
+			return nil, func() {}, ErrBufferClosed
+		default:
+		}
 		// Non-blocking fast path for normal operation.
 		select {
 		case cm := <-a.chunkChan:
 			a.recordDequeue(cm)
 
 			return cm.chunk, func() {}, nil
-		case <-a.closeChan:
-			return nil, func() {}, ErrBufferClosed
 		default:
 			return nil, func() {}, ErrNoFrameAvailable
 		}

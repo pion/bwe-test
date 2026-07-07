@@ -46,6 +46,8 @@ var (
 	ErrMissingEncoderConfig        = errors.New("either EncoderBuilder or InitialBitrate must be provided")
 	ErrForceKeyFrameNotSupported   = errors.New("encoder does not support ForceKeyFrame")
 	ErrInvalidPCMChunk             = errors.New("invalid PCM chunk: length must be a positive multiple of channel count")
+	ErrPCMFormatMismatch           = errors.New("PCM format does not match the track's Opus encoder (sample rate / channel count)")
+	ErrAudioTrackNotAllocatable    = errors.New("audio track bitrate is GCC-managed and cannot be set via SetBitrateAllocation")
 )
 
 // Audio bitrate clamp (bps) for GCC-driven Opus. The GCC allocation for the
@@ -134,11 +136,10 @@ type EncodedTrack struct {
 	audioTrack  *mediadevices.AudioTrack
 	audioSource *AudioBuffer
 
-	// captureSrc / signaler abstract the per-kind frame source so the encode
-	// loop is media-agnostic: both *FrameBuffer (video) and *AudioBuffer
-	// (audio) implement them. Set once at track construction.
-	captureSrc captureTimeSource
-	signaler   frameSignaler
+	// source abstracts the per-kind frame buffer so the encode loop is
+	// media-agnostic: both *FrameBuffer (video) and *AudioBuffer (audio)
+	// implement it. Set once at track construction.
+	source trackBuffer
 }
 
 // EncodedFrameCallback is called after each VP8 frame is encoded with the
@@ -683,8 +684,7 @@ func (s *RTCSender) AddVideoTrack(info VideoTrackInfo) error {
 		bitrateTracker: codec.NewBitrateTracker(300 * time.Millisecond),
 		mimeType:       mimeType,
 		encodeDone:     make(chan struct{}),
-		captureSrc:     frameSource,
-		signaler:       frameSource,
+		source:         frameSource,
 	}
 	track.lastEncodeAtWallUs.Store(time.Now().UnixMicro())
 	s.tracks[info.TrackID] = track
@@ -877,8 +877,7 @@ func (s *RTCSender) AddEncodedAudioTrack(trackID string, params opus.Params) err
 		audioTrack:     audioMediaTrack,
 		audioSource:    audioSource,
 		encodeDone:     make(chan struct{}),
-		captureSrc:     audioSource,
-		signaler:       audioSource,
+		source:         audioSource,
 	}
 	track.lastEncodeAtWallUs.Store(time.Now().UnixMicro())
 	s.tracks[trackID] = track
@@ -962,6 +961,15 @@ func (s *RTCSender) SendAudioFrameWithCaptureTS(
 
 	if !track.isAudio {
 		return fmt.Errorf("%w: %s", ErrTrackDoesNotSupportFrames, trackID)
+	}
+
+	// The Opus encoder's sample rate and channel count are fixed when the track
+	// is created (NewAudioBuffer). Reject mismatched PCM rather than letting it
+	// through: a wrong rate/channel count produces garbled, wrong-pitch audio and
+	// mis-scales the 48 kHz RTP-timestamp math, with no other error surfaced.
+	if sampleRate != track.audioSource.sampleRate || channels != track.audioSource.channels {
+		return fmt.Errorf("%w: got %d Hz/%d ch, track expects %d Hz/%d ch",
+			ErrPCMFormatMismatch, sampleRate, channels, track.audioSource.sampleRate, track.audioSource.channels)
 	}
 
 	return track.audioSource.PushPCMWithCaptureTS(pcm, sampleRate, channels, captureTSUs)
@@ -1122,7 +1130,14 @@ func updateEncoderBitrate(track *EncodedTrack, currentBitrate, targetBitrate int
 			return false
 		}
 
+		// mediadevices' opus SetBitRate calls opus_encoder_ctl without taking the
+		// encoder's own lock, so it races opus_encode running on the per-track
+		// encode goroutine (undefined behavior in libopus). That goroutine holds
+		// encoderMu.RLock across its Read (see encodeAndSendTrack), so take the
+		// write lock here to serialize the bitrate change against encoding.
+		track.encoderMu.Lock()
 		_ = controller.SetBitRate(clampAudioBitrate(targetBitrate))
+		track.encoderMu.Unlock()
 
 		return true
 	}
@@ -1165,6 +1180,11 @@ func (s *RTCSender) UpdateBitrate(targetBitrate int) {
 // the estimate rather than riding additively on top of it. It returns the pool
 // left for video and the per-video-track equal share. Callers must hold
 // tracksMu (read lock is sufficient).
+//
+// One regime is intentionally not fully shared: when the GCC target drops below
+// kAudioMinBps, audio clamps up to kAudioMinBps while videoPool floors at 0, so
+// audio+video can exceed the target by up to ~kAudioMinBps. This is accepted —
+// keeping audio intelligible under severe congestion is worth the small overshoot.
 func (s *RTCSender) videoPoolAndEqualShare(targetBitrate int) (videoPool, equalShare int) {
 	reservedAudio, numVideo := 0, 0
 	for _, track := range s.tracks {
@@ -1280,13 +1300,13 @@ func (s *RTCSender) runEncodeLoop(ctx context.Context, trackID string, track *En
 	// video, *AudioBuffer for audio) and never swapped (recreateEncoder only
 	// replaces encodedReader), so these channels stay valid across encoder
 	// recreation.
-	if track.signaler == nil {
+	if track.source == nil {
 		s.log.Errorf("track %s has no frame signaler; encode loop exiting", trackID)
 
 		return
 	}
-	frameReady := track.signaler.FrameReady()
-	bufClosed := track.signaler.Closed()
+	frameReady := track.source.FrameReady()
+	bufClosed := track.source.Closed()
 
 	for {
 		select {
@@ -1373,9 +1393,9 @@ func (s *RTCSender) encodeAndSendTrack(trackID string, track *EncodedTrack) (boo
 	// Per-frame stamps; sources without capture-time plumbing report 0. Both
 	// *FrameBuffer (video) and *AudioBuffer (audio) implement captureTimeSource.
 	var captureTSUs, dequeuedAtWallUs int64
-	if track.captureSrc != nil {
-		captureTSUs = track.captureSrc.LastCaptureTSUs()
-		dequeuedAtWallUs = track.captureSrc.LastDequeueWallUs()
+	if track.source != nil {
+		captureTSUs = track.source.LastCaptureTSUs()
+		dequeuedAtWallUs = track.source.LastDequeueWallUs()
 	}
 
 	track.bitrateMu.Lock()
@@ -1441,8 +1461,15 @@ func (s *RTCSender) SetBitrateAllocation(allocation map[string]float64) error {
 		if value < 0.0 {
 			return fmt.Errorf("%w: %f", ErrInvalidNegativeValue, value)
 		}
-		if _, exists := s.tracks[trackID]; !exists {
+		track, exists := s.tracks[trackID]
+		if !exists {
 			return fmt.Errorf("%w: %s", ErrTrackNotFound, trackID)
+		}
+		// Audio is allocated independently by the GCC path (updateBitrate skips it
+		// via audioTargetBitrate), so an audio weight here would be summed into
+		// total but never applied — silently under-allocating the video tracks.
+		if track.isAudio {
+			return fmt.Errorf("%w: %s", ErrAudioTrackNotAllocatable, trackID)
 		}
 		total += value
 	}
@@ -1662,16 +1689,21 @@ func (s *RTCSender) GetEncodeFrameOk() bool {
 	s.tracksMu.RLock()
 	defer s.tracksMu.RUnlock()
 
-	if len(s.tracks) == 0 {
-		return true
-	}
-
 	cutoffUs := time.Now().Add(-encodeHealthTimeout).UnixMicro()
+	hasVideo := false
 	for _, track := range s.tracks {
+		// This is a video-stall watchdog. Encoded audio flows continuously and is
+		// GCC-driven, so counting it here would mask a stalled video encoder once
+		// an audio track exists — only consider video tracks.
+		if track.isAudio {
+			continue
+		}
+		hasVideo = true
 		if track.lastEncodeAtWallUs.Load() >= cutoffUs {
 			return true
 		}
 	}
 
-	return false
+	// No video tracks to watch (including the no-tracks case) → healthy.
+	return !hasVideo
 }
