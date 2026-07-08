@@ -816,8 +816,8 @@ func (s *RTCSender) AddAudioTrack(trackID string) (*webrtc.TrackLocalStaticSampl
 
 // AddEncodedAudioTrack adds a GCC-managed encoded audio track. Unlike
 // AddAudioTrack (which expects pre-encoded Opus via WriteSample), this track
-// owns the Opus encoder: callers push raw PCM via SendAudioFrame and the GCC
-// control loop drives its bitrate alongside video, sharing the bitrate pool.
+// owns the Opus encoder: callers push raw PCM via SendAudioFrameWithCaptureTS
+// and the GCC control loop drives its bitrate alongside video, sharing the pool.
 // It is driven by the same per-track runEncodeLoop goroutine as video.
 func (s *RTCSender) AddEncodedAudioTrack(trackID string, params opus.Params) error {
 	s.tracksMu.Lock()
@@ -952,13 +952,6 @@ func (s *RTCSender) SendFrameWithCaptureTS(trackID string, frame image.Image, ca
 	}
 
 	return err
-}
-
-// SendAudioFrame pushes raw interleaved PCM to an encoded audio track with no
-// associated capture timestamp. Equivalent to
-// SendAudioFrameWithCaptureTS(trackID, pcm, sampleRate, channels, 0).
-func (s *RTCSender) SendAudioFrame(trackID string, pcm []int16, sampleRate, channels int) error {
-	return s.SendAudioFrameWithCaptureTS(trackID, pcm, sampleRate, channels, 0)
 }
 
 // SendAudioFrameWithCaptureTS pushes raw interleaved PCM to an encoded audio
