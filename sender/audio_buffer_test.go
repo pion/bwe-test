@@ -255,7 +255,7 @@ func TestRTCSender_SendAudioFrame_NonExistentTrack(t *testing.T) {
 	rtcSender, err := NewRTCSender()
 	require.NoError(t, err)
 
-	err = rtcSender.SendAudioFrame("missing", pcm20ms(), audioSampleRate, audioChannels)
+	err = rtcSender.SendAudioFrameWithCaptureTS("missing", pcm20ms(), audioSampleRate, audioChannels, 0)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrTrackNotFound)
 }
@@ -271,7 +271,7 @@ func TestRTCSender_SendAudioFrame_RejectsVideoTrack(t *testing.T) {
 		EncoderBuilder: &MockVideoEncoderBuilder{},
 	}))
 
-	err = rtcSender.SendAudioFrame("cam-0", pcm20ms(), audioSampleRate, audioChannels)
+	err = rtcSender.SendAudioFrameWithCaptureTS("cam-0", pcm20ms(), audioSampleRate, audioChannels, 0)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrTrackDoesNotSupportFrames)
 }
@@ -305,8 +305,8 @@ func TestRTCSender_EncodedAudio_ProducesOpusFrames(t *testing.T) {
 	// Feed PCM at ~20ms cadence and wait for the encode loop to emit a frame.
 	deadline := time.Now().Add(2 * time.Second)
 	for i := 0; i < 100 && !sent.Load() && time.Now().Before(deadline); i++ {
-		require.NoError(t, rtcSender.SendAudioFrame(
-			testAudioTrackID, pcm20ms(), audioSampleRate, audioChannels))
+		require.NoError(t, rtcSender.SendAudioFrameWithCaptureTS(
+			testAudioTrackID, pcm20ms(), audioSampleRate, audioChannels, 0))
 		time.Sleep(10 * time.Millisecond)
 	}
 
