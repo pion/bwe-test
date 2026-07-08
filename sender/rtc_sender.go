@@ -410,6 +410,24 @@ func (s *RTCSender) stampCaptureTime(track *EncodedTrack, captureTSUs int64) {
 	}
 }
 
+// SetPreEncodedCaptureTSUs records a capture timestamp (unix microseconds;
+// 0 = none) on the capture-timestamp interceptor for a pre-encoded track's
+// SSRC, so the interceptor encodes it into that track's next outgoing RTP
+// timestamp (same abs-capture-time scheme as video).
+//
+// Unlike encoded tracks (AddVideoTrack / AddEncodedAudioTrack), pre-encoded
+// tracks added via AddAudioTrack produce RTP through WriteSample rather than an
+// internal encode loop, so RTCSender never learns their SSRC. The caller
+// supplies the SSRC (assigned when the track is added to the PeerConnection)
+// and must call this immediately before the corresponding WriteSample, on the
+// same goroutine, so the stored value applies to that frame's packets.
+func (s *RTCSender) SetPreEncodedCaptureTSUs(ssrc uint32, captureTSUs int64) {
+	if s.captureTimestamp == nil {
+		return
+	}
+	s.captureTimestamp.SetCaptureTSUs(ssrc, captureTSUs)
+}
+
 // setupCaptureTimestamp installs the interceptor that encodes each frame's
 // capture timestamp into the outgoing RTP timestamp. It is a no-op for any
 // stream/frame where no capture time was supplied via SetCaptureTSUs.
