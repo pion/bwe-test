@@ -5,7 +5,7 @@ go 1.24.0
 toolchain go1.26.5
 
 require (
-	github.com/pion/interceptor v0.1.45
+	github.com/pion/interceptor v0.1.46
 	github.com/pion/logging v0.2.4
 	github.com/pion/mediadevices v0.10.0
 	github.com/pion/rtcp v1.2.17
