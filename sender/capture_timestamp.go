@@ -28,8 +28,24 @@ import (
 type captureTimestampInterceptor struct {
 	interceptor.NoOp
 
+	// rewrite gates the RTP-timestamp overwrite. It is DISABLED by default:
+	// replacing the packetizer's clock with an external wall clock breaks any
+	// track whose sending is gated outside the RTP stack (e.g. a simulcast-like
+	// setup where a track is allocated zero bitrate and starts sending later) —
+	// such a track begins mid-session with a base derived from wall time and the
+	// receiver never renders it. Enable with sender.CaptureTimestampRewrite()
+	// only when every track sends continuously for the session's lifetime.
+	rewrite atomic.Bool
+
 	mu    sync.Mutex
 	slots map[uint32]*atomic.Int64 // ssrc -> capture time (unix microseconds), 0 = none
+}
+
+// SetRewriteEnabled turns the RTP-timestamp overwrite on or off. Capture times
+// supplied via SetCaptureTSUs are still recorded when disabled, so callers that
+// only want capture-time telemetry are unaffected.
+func (it *captureTimestampInterceptor) SetRewriteEnabled(enabled bool) {
+	it.rewrite.Store(enabled)
 }
 
 func newCaptureTimestampInterceptor() *captureTimestampInterceptor {
@@ -102,8 +118,9 @@ func (it *captureTimestampInterceptor) BindLocalStream(
 			}
 
 			// Apply the capture-derived timestamp to every packet of the frame,
-			// keeping it constant across the frame's packets.
-			if frameValid {
+			// keeping it constant across the frame's packets. Skipped unless the
+			// rewrite was explicitly enabled — see the `rewrite` field.
+			if frameValid && it.rewrite.Load() {
 				header.Timestamp = frameRTPTS
 			}
 
