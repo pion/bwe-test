@@ -13,6 +13,7 @@ import (
 	"github.com/pion/bwe-test/logging"
 	"github.com/pion/interceptor"
 	"github.com/pion/interceptor/pkg/cc"
+	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/interceptor/pkg/packetdump"
 	plogging "github.com/pion/logging"
 	"github.com/pion/transport/v4/vnet"
@@ -77,15 +78,17 @@ func CCLogWriter(w io.Writer) Option {
 // GCC returns an Option that configures Google Congestion Control with the
 // specified initial bitrate and max bitrate (in bps). A maxBitrate of 0 means
 // no cap (uses GCC default of 50 Mbps).
-func GCC(initialBitrate, maxBitrate int) Option {
+// GCC configures send-side bandwidth estimation. extra is passed through to the
+// estimator, so a caller can set options the two bitrate arguments do not cover.
+func GCC(initialBitrate, maxBitrate int, extra ...gcc.Option) Option {
 	return func(sender ConfigurableWebRTCSender) error {
 		if rtcSender, ok := sender.(*RTCSender); ok {
 			rtcSender.gccConfigured = true
 
-			return rtcSender.setupGCC(initialBitrate, maxBitrate)
+			return rtcSender.setupGCC(initialBitrate, maxBitrate, extra...)
 		}
 		// Fallback for other ConfigurableWebRTCSender types.
-		controller, err := cc.NewInterceptor(newGCCFactory(initialBitrate, maxBitrate))
+		controller, err := cc.NewInterceptor(newGCCFactory(initialBitrate, maxBitrate, extra...))
 		if err != nil {
 			return err
 		}
