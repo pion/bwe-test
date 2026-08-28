@@ -284,20 +284,25 @@ func NewRTCSender(opts ...Option) (*RTCSender, error) {
 // newGCCFactory builds the send-side BWE estimator factory for the cc
 // interceptor, applying the initial bitrate and an optional max cap (0 = no
 // cap). Shared by setupGCC and the GCC option's fallback path.
-func newGCCFactory(initialBitrate, maxBitrate int) func() (cc.BandwidthEstimator, error) {
+// newGCCFactory builds estimators for each PeerConnection. extra is appended
+// after the bitrate options, so a caller can override anything they set.
+func newGCCFactory(
+	initialBitrate, maxBitrate int, extra ...gcc.Option,
+) func() (cc.BandwidthEstimator, error) {
 	return func() (cc.BandwidthEstimator, error) {
 		opts := []gcc.Option{gcc.SendSideBWEInitialBitrate(initialBitrate)}
 		if maxBitrate > 0 {
 			opts = append(opts, gcc.SendSideBWEMaxBitrate(maxBitrate))
 		}
+		opts = append(opts, extra...)
 
 		return gcc.NewSendSideBWE(opts...)
 	}
 }
 
-func (s *RTCSender) setupGCC(initialBitrate, maxBitrate int) error {
+func (s *RTCSender) setupGCC(initialBitrate, maxBitrate int, extra ...gcc.Option) error {
 	s.maxBitrate = maxBitrate
-	controller, err := cc.NewInterceptor(newGCCFactory(initialBitrate, maxBitrate))
+	controller, err := cc.NewInterceptor(newGCCFactory(initialBitrate, maxBitrate, extra...))
 	if err != nil {
 		return err
 	}
