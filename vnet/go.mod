@@ -8,7 +8,7 @@ require (
 	github.com/pion/bwe-test v0.0.0-00010101000000-000000000000
 	github.com/pion/logging v0.2.4
 	github.com/pion/mediadevices v0.10.0
-	github.com/pion/transport/v4 v4.0.2
+	github.com/pion/transport/v4 v4.1.0
 	github.com/stretchr/testify v1.11.1
 	gocv.io/x/gocv v0.43.0
 )
@@ -23,7 +23,7 @@ require (
 	github.com/pion/mdns/v2 v2.1.0 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.17 // indirect
-	github.com/pion/rtp v1.10.3 // indirect
+	github.com/pion/rtp v1.10.4 // indirect
 	github.com/pion/sctp v1.10.3 // indirect
 	github.com/pion/sdp/v3 v3.0.19 // indirect
 	github.com/pion/srtp/v3 v3.0.12 // indirect
