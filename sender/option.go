@@ -7,6 +7,7 @@
 package sender
 
 import (
+	"errors"
 	"io"
 	"time"
 
@@ -63,6 +64,31 @@ func PacketLogWriter(rtpWriter, rtcpWriter io.Writer) Option {
 func DefaultInterceptors() Option {
 	return func(sender ConfigurableWebRTCSender) error {
 		return webrtc.RegisterDefaultInterceptors(sender.GetMediaEngine(), sender.GetRegistry())
+	}
+}
+
+var errCaptureTimestampUnsupported = errors.New(
+	"CaptureTimestampRewrite requires an *RTCSender")
+
+// CaptureTimestampRewrite returns an Option that encodes each frame's capture
+// time (supplied via SetCaptureTSUs) into the outgoing RTP timestamp, so the
+// capture instant survives an SFU that strips header extensions on egress.
+//
+// Off by default, and unsafe for tracks whose sending is gated outside the RTP
+// stack: a track that is idle and then starts sending mid-session begins with a
+// timestamp base derived from wall time, and receivers do not render it. There
+// is no way to both preserve the packetizer's timeline and carry an absolute
+// capture instant in the same field, so prefer an out-of-band channel (e.g. a
+// data channel keyed by RTP timestamp) when tracks may start or stop.
+func CaptureTimestampRewrite() Option {
+	return func(sender ConfigurableWebRTCSender) error {
+		rtcSender, ok := sender.(*RTCSender)
+		if !ok {
+			return errCaptureTimestampUnsupported
+		}
+		rtcSender.captureTimestamp.SetRewriteEnabled(true)
+
+		return nil
 	}
 }
 

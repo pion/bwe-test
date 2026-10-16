@@ -43,6 +43,7 @@ func bindCaptureRate(
 // is overwritten with captureUs*9/100 (mod 2^32), constant across a frame.
 func TestCaptureTimestampInterceptor_EncodesCaptureTime(t *testing.T) {
 	it := newCaptureTimestampInterceptor()
+	it.SetRewriteEnabled(true)
 	sink := &captureCollector{}
 	w := bindCapture(it, sink)
 
@@ -120,4 +121,43 @@ func TestCaptureTimestampInterceptor_RemoveSSRC(t *testing.T) {
 	// Removing an unknown SSRC is a no-op.
 	it.RemoveSSRC(0xDEAD)
 	assert.Len(t, it.slots, 1)
+}
+
+// TestCaptureTimestampInterceptor_DisabledByDefault asserts the rewrite is off
+// unless explicitly enabled, so a capture time supplied for telemetry does not
+// silently replace the packetizer's clock. Overwriting it breaks any track whose
+// sending is gated outside the RTP stack: such a track starts mid-session with a
+// wall-clock-derived base and receivers never render it.
+func TestCaptureTimestampInterceptor_DisabledByDefault(t *testing.T) {
+	it := newCaptureTimestampInterceptor()
+	sink := &captureCollector{}
+	w := bindCapture(it, sink)
+
+	it.SetCaptureTSUs(testCaptureSSRC, 1_751_000_000_000_000)
+	_, _ = w.Write(&rtp.Header{Timestamp: 4242}, nil, nil)
+
+	// Packetizer timestamp preserved, capture time still recorded for callers
+	// that read it for telemetry.
+	assert.Equal(t, []uint32{4242}, sink.timestamps)
+	assert.Equal(t, int64(1_751_000_000_000_000), it.slot(testCaptureSSRC).Load())
+}
+
+// TestCaptureTimestampInterceptor_RewriteToggle asserts the gate takes effect
+// per frame, so enabling and disabling at runtime is honored.
+func TestCaptureTimestampInterceptor_RewriteToggle(t *testing.T) {
+	it := newCaptureTimestampInterceptor()
+	sink := &captureCollector{}
+	w := bindCapture(it, sink)
+
+	captureUs := int64(1_751_000_000_000_000)
+	it.SetCaptureTSUs(testCaptureSSRC, captureUs)
+	want := uint32(captureUs * 9 / 100) //nolint:gosec // intentional 32-bit wrap
+
+	_, _ = w.Write(&rtp.Header{Timestamp: 100}, nil, nil)
+	it.SetRewriteEnabled(true)
+	_, _ = w.Write(&rtp.Header{Timestamp: 200}, nil, nil)
+	it.SetRewriteEnabled(false)
+	_, _ = w.Write(&rtp.Header{Timestamp: 300}, nil, nil)
+
+	assert.Equal(t, []uint32{100, want, 300}, sink.timestamps)
 }
